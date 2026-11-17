@@ -66,6 +66,9 @@ function setStatus(text) { $("#statusText").textContent = text; }
 // =====================================================================
 const state = {
   tracks: [],
+  byId: new Map(),          // song id (stable, from the library index) -> song
+  tracksVersion: -1,
+  playErrors: new Map(),    // song id -> why it couldn't be played
   view: [],                 // filtered + sorted list shown in the grid
   sortKey: null, sortDir: 1,
   filter: "",
@@ -82,6 +85,8 @@ const STATUS = {
   on: { label: "On device", rank: 1 },
   remove: { label: "To remove", rank: 3 },
 };
+const byId = (id) => state.byId.get(id);
+
 function statusOf(t) {
   if (!state.device) return "none";
   if (t.selected && t.onDevice) return "on";
@@ -143,6 +148,20 @@ function queueRender() {
   requestAnimationFrame(() => { renderQueued = false; render(); });
 }
 
+const ERR_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 21h20z"/><path d="M12 10v5M12 18h.01" class="mark"/></svg>';
+
+/** Updates highlight classes on the rows already on screen, without redrawing them. Redrawing
+ *  on every click replaced the row under the mouse, which stopped double-click from working. */
+function refreshRowClasses() {
+  const playingId = player.current ? player.current.id : -1;
+  for (const row of gridBody.children) {
+    const id = +row.dataset.id;
+    row.classList.toggle("is-sel", state.sel.has(id));
+    row.classList.toggle("is-focus", state.focus === id);
+    row.classList.toggle("is-playing", id === playingId);
+  }
+}
+
 function render() {
   const top = grid.scrollTop;
   const start = Math.max(0, Math.floor(top / ROW) - 10);
@@ -163,6 +182,10 @@ function render() {
         html += `<div class="c-check"><input type="checkbox" class="chk" ${t.selected ? "checked" : ""} aria-label="Keep ${esc(t.title)} on the device"></div>`;
       } else if (c.key === "status") {
         html += `<div class="st-${st}">${STATUS[st].label}</div>`;
+      } else if (c.key === "title" && state.playErrors.has(t.id)) {
+        const why = esc("Can't play: " + state.playErrors.get(t.id));
+        const text = esc(c.text(t));
+        html += `<div class="c-title has-error" title="${why}"><span class="err-icon" role="img" aria-label="${why}">${ERR_ICON}</span>${text}</div>`;
       } else {
         const text = esc(c.text(t));
         html += `<div class="${c.num ? "num" : ""} ${c.cls || ""}" title="${text}">${text}</div>`;
@@ -175,7 +198,7 @@ function render() {
 
 function trackFromEvent(e) {
   const row = e.target.closest(".row");
-  return row ? state.tracks[+row.dataset.id] : null;
+  return row ? byId(+row.dataset.id) : null;
 }
 
 function indexInView(id) { return state.view.findIndex((t) => t.id === id); }
@@ -196,9 +219,15 @@ function ensureVisible(index) {
 }
 
 function setChecked(ids, value) {
-  for (const id of ids) state.tracks[id].selected = value;
+  const changed = ids.filter((id) => byId(id) && !!byId(id).selected !== value);
+  for (const id of changed) byId(id).selected = value;
   updateSummary();
   render();
+  if (changed.length) {
+    // Saved in the library index, so ticks survive restarts.
+    api.send("/api/selection", { ids: changed, selected: value })
+      .catch((err) => setStatus("Couldn't save your ticks: " + err.message));
+  }
 }
 
 gridHead.addEventListener("click", (e) => {
@@ -232,15 +261,20 @@ gridBody.addEventListener("click", (e) => {
     state.anchor = t.id;
   }
   state.focus = t.id;
-  render();
+  refreshRowClasses();
   grid.focus({ preventScroll: true });
-});
 
-gridBody.addEventListener("dblclick", (e) => {
-  if (e.target.classList.contains("chk")) return;
-  const t = trackFromEvent(e);
-  if (t) playFromView(t);
+  // Double-click detection that doesn't depend on the row element staying the same.
+  const now = performance.now();
+  const plain = !e.shiftKey && !e.ctrlKey && !e.metaKey;
+  if (plain && lastClick.id === t.id && now - lastClick.time < 450) {
+    lastClick = { id: null, time: 0 };
+    playFromView(t);
+  } else {
+    lastClick = { id: t.id, time: now };
+  }
 });
+let lastClick = { id: null, time: 0 };
 
 grid.addEventListener("keydown", (e) => {
   if (e.target !== grid && !e.target.classList.contains("chk")) return;
@@ -272,11 +306,11 @@ grid.addEventListener("keydown", (e) => {
       const ids = state.sel.size ? [...state.sel] : (state.focus != null ? [state.focus] : []);
       if (!ids.length) return;
       // If any highlighted song is unticked, tick them all; otherwise untick them all.
-      setChecked(ids, ids.some((id) => !state.tracks[id].selected));
+      setChecked(ids, ids.some((id) => !byId(id).selected));
       break;
     }
     case "Enter":
-      if (state.focus != null) { playFromView(state.tracks[state.focus]); e.preventDefault(); }
+      if (state.focus != null && byId(state.focus)) { playFromView(byId(state.focus)); e.preventDefault(); }
       break;
     case "a":
       if (e.ctrlKey || e.metaKey) {
@@ -309,7 +343,7 @@ ctx.addEventListener("click", async (e) => {
   if (!act) return;
   ctx.hidden = true;
   const ids = [...state.sel];
-  if (act === "play" && state.focus != null) playFromView(state.tracks[state.focus]);
+  if (act === "play" && byId(state.focus)) playFromView(byId(state.focus));
   if (act === "check") setChecked(ids, true);
   if (act === "uncheck") setChecked(ids, false);
   if (act === "reveal" && state.focus != null) {
@@ -384,6 +418,7 @@ async function watchJob(onEvent) {
         continue;
       }
       if (!j) return null;
+      if (j.tracksVersion != null && j.tracksVersion !== state.tracksVersion) await loadTracks();
       if (j.total) { $("#progress").max = j.total; $("#progress").value = j.done; }
       setStatus(j.total && j.running ? `[${j.done.toLocaleString()}/${j.total.toLocaleString()}] ${j.message}` : j.message);
       if (onEvent && j.events.length) { j.events.forEach(onEvent); queueRender(); updateSummary(); }
@@ -402,12 +437,16 @@ $("#cancelBtn").addEventListener("click", () => api.send("/api/job/cancel").catc
 // Library
 // =====================================================================
 async function loadTracks() {
-  const { tracks } = await api.get("/api/tracks");
-  player.stop();
-  for (const t of tracks) t.selected = t.onDevice;   // what's on the device starts ticked
+  const { tracks, version } = await api.get("/api/tracks");
+  state.tracksVersion = version;
+  for (const t of tracks) t.selected = !!t.selected;   // saved ticks come from the library index
   state.tracks = tracks;
-  state.sel.clear();
-  state.focus = state.anchor = null;
+  state.byId = new Map(tracks.map((t) => [t.id, t]));
+  // Ids are stable between rescans, so playback and highlights carry over.
+  if (player.current && !state.byId.has(player.current.id)) player.stop();
+  state.sel = new Set([...state.sel].filter((id) => state.byId.has(id)));
+  if (!state.byId.has(state.focus)) state.focus = null;
+  if (!state.byId.has(state.anchor)) state.anchor = null;
   applyView();
   updateSummary();
 }
@@ -424,8 +463,7 @@ async function scanLibrary(folder) {
 }
 
 async function finishScan() {
-  const job = await watchJob();
-  if (job && !job.cancelled && !job.errors.length) await loadTracks();
+  const job = await watchJob();      // reloads the list itself as the server updates it
   if (job && job.errors.length) message("Scan stopped", job.errors.join("\n"));
 }
 
@@ -481,22 +519,22 @@ async function checkDeviceConnection() {
   const pluggedBackIn = !state.device && state.savedDevice && res.savedAvailable;
   if (!unplugged && !pluggedBackIn) return;
   try {
-    applyDevice(await api.send("/api/device/refresh"), "add");
+    applyDevice(await api.send("/api/device/refresh"));
     if (unplugged) setStatus(`${state.savedDevice} was disconnected. Your ticks are kept for when it's back.`);
     refreshDrives();
   } catch { /* busy or server away: try again on the next check */ }
 }
 setInterval(checkDeviceConnection, 4000);
 
-/** mode: "add" = tick songs found on the device, "match" = ticks equal device contents, "keep" = leave ticks */
-function applyDevice(res, mode) {
+/** Applies a device response from the server: which songs are on it and which are ticked. */
+function applyDevice(res) {
   state.device = res.device;
   if ("savedDevice" in res) state.savedDevice = res.savedDevice;
   const on = new Set(res.onDevice);
+  const ticked = res.selected ? new Set(res.selected) : null;
   for (const t of state.tracks) {
     t.onDevice = on.has(t.id);
-    if (mode === "match") t.selected = t.onDevice;
-    else if (mode === "add" && t.onDevice) t.selected = true;
+    if (ticked) t.selected = ticked.has(t.id);
   }
   updateDeviceInfo();
   updateSummary();
@@ -515,7 +553,7 @@ async function setDevice(folder) {
   setStatus("Checking which songs are on the device…");
   try {
     const res = await api.send("/api/device", { folder });
-    applyDevice(res, hadDevice ? "match" : "add");
+    applyDevice(res);
   } catch (err) {
     await message("Can't use that folder", err.message);
   }
@@ -532,7 +570,7 @@ $("#refreshDevice").addEventListener("click", async () => {
   if (!state.device && !state.savedDevice) { refreshDrives(); return; }
   const wasConnected = !!state.device;
   try {
-    applyDevice(await api.send("/api/device/refresh"), wasConnected ? "keep" : "add");
+    applyDevice(await api.send("/api/device/refresh"));
     if (!state.device) setStatus(`${state.savedDevice} isn't connected.`);
   } catch (err) { setStatus("Couldn't read the device: " + err.message); }
   refreshDrives();
@@ -569,11 +607,11 @@ $("#syncBtn").addEventListener("click", async () => {
   }
   let job;
   try {
-    job = await watchJob(([id, onDevice]) => { if (state.tracks[id]) state.tracks[id].onDevice = onDevice; });
+    job = await watchJob(([id, onDevice]) => { if (byId(id)) byId(id).onDevice = onDevice; });
   } catch (err) {
     await message("Sync interrupted", err.connectionLost ? SERVER_DOWN_HELP : err.message);
     // Re-read the device so the list shows what actually happened.
-    try { applyDevice(await api.send("/api/device/refresh"), "keep"); } catch { /* server still down */ }
+    try { applyDevice(await api.send("/api/device/refresh")); } catch { /* server still down */ }
     return;
   }
   try { state.device = (await api.get("/api/state")).device; } catch { /* ignore */ }
@@ -600,13 +638,13 @@ class Player {
     this.trackPlays = 0;           // times the current song has played (auto-advance off)
     this.failures = 0;
     this.current = null; this.state = "stopped";
-    this.onchange = () => {}; this.onerror = () => {};
+    this.onchange = () => {}; this.onerror = () => {}; this.onplaying = () => {};
 
     audio.addEventListener("ended", () => this.onEnded());
-    audio.addEventListener("playing", () => { this.failures = 0; });
+    audio.addEventListener("playing", () => { this.failures = 0; if (this.current) this.onplaying(this.current); });
     audio.addEventListener("error", () => {
       if (!this.current) return;
-      this.onerror(`Couldn't play “${this.current.title}”. Your browser may not support this file type.`);
+      this.onerror(this.current, audio.error);
       if (!this.autoAdvance || ++this.failures >= Math.max(1, this.order.length)) { this.stop(); return; }
       this.next();
     });
@@ -727,7 +765,33 @@ function playFromView(start) {
   player.play(state.view, start || null);   // current sort + filter order is the play order
 }
 
-player.onerror = setStatus;
+/** Works out why a song wouldn't play, and marks it in the list with that reason. */
+async function explainPlayError(track, mediaError) {
+  const code = mediaError ? mediaError.code : 0;
+  const detail = mediaError && mediaError.message ? mediaError.message : "";
+  let chk = null;
+  try { chk = await api.get(`/api/check/${track.id}`); } catch { /* server unreachable */ }
+  const ext = (chk && chk.ext) || ("." + track.rel.split(".").pop().toLowerCase());
+  let reason;
+  if (!chk) reason = "Couldn't reach the MusicSync server to load the file.";
+  else if (!chk.exists) reason = "File not found. It may have been moved, renamed or deleted. Rescan the library to update the list.";
+  else if (!chk.readable) reason = `Couldn't read the file${chk.error ? ` (${chk.error})` : ""}. The drive may be busy, failing or disconnected.`;
+  else if (chk.size === 0) reason = "The file is empty (0 bytes).";
+  else if (chk.mime && audio.canPlayType(chk.mime) === "") reason = `This browser can't play ${ext} files.`;
+  else if (!chk.parses) reason = "The file looks damaged: its audio data couldn't be read.";
+  else if (code === MediaError.MEDIA_ERR_DECODE) reason = "The file is damaged, or its audio uses a codec this browser can't decode.";
+  else if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) reason = `The audio inside this ${ext} file uses a codec this browser doesn't support.`;
+  else if (code === MediaError.MEDIA_ERR_NETWORK) reason = "The file stopped loading part way (drive or connection error).";
+  else reason = "The file couldn't be played.";
+  if (detail) reason += ` (Browser: ${detail})`;
+  state.playErrors.set(track.id, reason);
+  render();
+  setStatus(`Couldn't play “${track.title}”: ${reason}`);
+}
+player.onerror = (track, mediaError) => { explainPlayError(track, mediaError); };
+player.onplaying = (track) => {
+  if (state.playErrors.delete(track.id)) render();   // it plays now (e.g. the file was fixed)
+};
 player.onchange = () => {
   const t = player.current;
   const playing = player.state === "playing";
@@ -755,7 +819,7 @@ player.onchange = () => {
 $("#playBtn").addEventListener("click", () => {
   if (player.state === "playing") player.pause();
   else if (player.state === "paused") player.resume();
-  else playFromView(state.focus != null ? state.tracks[state.focus] : null);
+  else playFromView(byId(state.focus) || null);
 });
 $("#stopBtn").addEventListener("click", () => player.stop());
 $("#nextBtn").addEventListener("click", () => player.next());
@@ -929,7 +993,7 @@ function pickFolder(title, start, { mustExist }) {
     else setStatus("Choose a music folder to begin.");
 
     if (state.device || state.savedDevice) {
-      applyDevice(await api.send("/api/device/refresh"), "add");
+      applyDevice(await api.send("/api/device/refresh"));
       await refreshDrives();
       if (!state.device) setStatus(`${state.savedDevice} isn't connected. Plug the drive in and it reconnects automatically.`);
     }

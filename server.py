@@ -15,6 +15,7 @@ import logging.handlers
 import mimetypes
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -179,18 +180,13 @@ def _leading_int(text: str) -> int:
     return int(digits) if digits else 0
 
 
-def read_track(root: str, path: str, track_id: int) -> dict:
-    rel = os.path.relpath(path, root)
+def read_tags(path: str, size: int) -> dict:
+    """Reads tags and audio properties. Never raises: unreadable files keep their file name as title."""
     t = {
-        "id": track_id, "path": path, "rel": rel,
         "title": os.path.splitext(os.path.basename(path))[0],
         "artist": "", "album": "", "genre": "", "year": 0, "track": 0,
-        "duration": 0.0, "bitrate": 0, "sampleRate": 0, "size": 0, "onDevice": False,
+        "duration": 0.0, "bitrate": 0, "sampleRate": 0,
     }
-    try:
-        t["size"] = os.path.getsize(path)
-    except OSError:
-        pass
     try:
         f = mutagen.File(path, easy=True)
         if f is not None:
@@ -207,12 +203,98 @@ def read_track(root: str, path: str, track_id: int) -> dict:
                 t["duration"] = float(getattr(info, "length", 0) or 0)
                 bitrate = int(getattr(info, "bitrate", 0) or 0)
                 if not bitrate and t["duration"] > 0:
-                    bitrate = int(t["size"] * 8 / t["duration"])  # estimate
+                    bitrate = int(size * 8 / t["duration"])  # estimate
                 t["bitrate"] = round(bitrate / 1000)
                 t["sampleRate"] = int(getattr(info, "sample_rate", 0) or 0)
     except Exception:
-        pass  # unreadable tags: keep the file name as the title
+        pass
     return t
+
+
+# ---------------------------------------------------------------------------
+# Library index (SQLite in %AppData%\MusicSync): remembers every file's size,
+# modified time, tags and sync choice, so rescans only read new/changed files.
+# ---------------------------------------------------------------------------
+
+TAG_FIELDS = ("title", "artist", "album", "genre", "year", "track", "duration", "bitrate", "sampleRate")
+DB_COLS = ("title", "artist", "album", "genre", "year", "track", "duration", "bitrate", "sample_rate")
+
+
+def library_key(folder: str) -> str:
+    return os.path.normcase(os.path.abspath(folder)).rstrip("\\/")
+
+
+class LibraryIndex:
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.db = self._open()
+        except sqlite3.DatabaseError:
+            log.warning("Library index was damaged; starting a fresh one.")
+            try:
+                path.replace(path.with_suffix(".damaged"))
+            except OSError:
+                pass
+            self.db = self._open()
+
+    def _open(self):
+        db = sqlite3.connect(self.path, check_same_thread=False)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("""CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY,
+            library TEXT NOT NULL,
+            relkey TEXT NOT NULL,          -- normalised relative path, used for matching
+            rel TEXT NOT NULL,             -- relative path as found on disk
+            size INTEGER, mtime_ns INTEGER,
+            title TEXT, artist TEXT, album TEXT, genre TEXT,
+            year INTEGER, track INTEGER, duration REAL, bitrate INTEGER, sample_rate INTEGER,
+            selected INTEGER,              -- 1 keep on device, 0 don't, NULL not decided yet
+            UNIQUE (library, relkey))""")
+        db.execute("SELECT count(*) FROM tracks").fetchone()   # fails fast if the file is damaged
+        db.commit()
+        return db
+
+    def load(self, library: str) -> dict:
+        """relkey -> row dict for every indexed file of this library."""
+        with self.lock:
+            cur = self.db.execute(
+                "SELECT id, relkey, rel, size, mtime_ns, " + ", ".join(DB_COLS) + ", selected "
+                "FROM tracks WHERE library = ?", (library,))
+            rows = {}
+            for r in cur:
+                row = {"id": r[0], "relkey": r[1], "rel": r[2], "size": r[3], "mtime_ns": r[4]}
+                row.update(zip(TAG_FIELDS, r[5:14]))
+                row["selected"] = None if r[14] is None else bool(r[14])
+                rows[r[1]] = row
+            return rows
+
+    def update(self, library: str, upserts: list[dict], removed_ids: list[int]) -> None:
+        with self.lock, self.db:
+            self.db.executemany(
+                "INSERT INTO tracks (library, relkey, rel, size, mtime_ns, " + ", ".join(DB_COLS) + ") "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (library, relkey) DO UPDATE SET rel = excluded.rel, size = excluded.size, "
+                "mtime_ns = excluded.mtime_ns, " + ", ".join(f"{c} = excluded.{c}" for c in DB_COLS),
+                [(library, u["relkey"], u["rel"], u["size"], u["mtime_ns"], *(u[f] for f in TAG_FIELDS))
+                 for u in upserts])
+            self.db.executemany("DELETE FROM tracks WHERE id = ?", [(i,) for i in removed_ids])
+
+    def set_selected(self, changes: list[tuple[int, bool]]) -> None:
+        if not changes:
+            return
+        with self.lock, self.db:
+            self.db.executemany("UPDATE tracks SET selected = ? WHERE id = ?",
+                                [(1 if v else 0, i) for i, v in changes])
+
+
+def _index_path() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home() / ".config")
+    return Path(base) / "MusicSync" / "library-index.sqlite"
+
+
+INDEX = LibraryIndex(_index_path())
 
 
 def public_track(t: dict) -> dict:
@@ -306,6 +388,8 @@ class State:
         self.library: str | None = None
         self.recursive = bool(self.settings.get("recursive", True))
         self.tracks: list[dict] = []
+        self.by_id: dict[int, dict] = {}
+        self.tracks_version = 0                         # bumps whenever the loaded library changes
         self.device: Device | None = None              # connected device
         self.saved_device: str | None = self.settings.get("device")  # remembered, even when unplugged
         self.job: Job | None = None
@@ -344,41 +428,132 @@ class State:
 S = State()
 
 
-def scan_library(job: Job, folder: str, recursive: bool) -> None:
-    job.message = "Finding music files…"
-    paths = []
-    if recursive:
-        for dirpath, _dirs, names in os.walk(folder):
-            for n in names:
-                if os.path.splitext(n)[1].lower() in EXTENSIONS:
-                    paths.append(os.path.join(dirpath, n))
-            if job.cancel.is_set():
-                raise Cancelled()
-    else:
-        for n in os.listdir(folder):
-            p = os.path.join(folder, n)
-            if os.path.isfile(p) and os.path.splitext(n)[1].lower() in EXTENSIONS:
-                paths.append(p)
-    paths.sort(key=lambda p: p.lower())
+def walk_music(folder: str, recursive: bool, job: Job) -> list[tuple[str, int, int]]:
+    """(path, size, mtime_ns) for every music file. os.scandir gets size and time from the
+    directory listing itself on Windows, so no extra disk access per file."""
+    found, stack, last = [], [folder], 0.0
+    while stack:
+        d = stack.pop()
+        try:
+            it = os.scandir(d)
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                if job.cancel.is_set():
+                    raise Cancelled()
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        if recursive and not e.name.startswith(("$", ".")):
+                            stack.append(e.path)
+                    elif os.path.splitext(e.name)[1].lower() in EXTENSIONS:
+                        st = e.stat()
+                        found.append((e.path, st.st_size, st.st_mtime_ns))
+                except OSError:
+                    pass
+        if time.monotonic() - last > 0.25:
+            job.message = f"Checking the music folder… {len(found):,} files found"
+            last = time.monotonic()
+    return found
 
-    job.total = len(paths)
-    tracks = []
-    for i, p in enumerate(paths):
-        if job.cancel.is_set():
-            raise Cancelled()
-        tracks.append(read_track(folder, p, i))
-        job.done = i + 1
-        job.message = f"Reading tags… {i + 1:,} of {len(paths):,}"
+
+def make_track(folder: str, row: dict) -> dict:
+    t = {k: row[k] for k in ("id", "rel", "size", *TAG_FIELDS)}
+    t["path"] = os.path.join(folder, row["rel"])
+    t["selected"] = row.get("selected")
+    t["onDevice"] = False
+    return t
+
+
+def resolve_undecided() -> None:
+    """Songs never ticked or unticked by you start out matching the device. Call with S.lock held."""
+    if not S.device:
+        return
+    changes = []
+    for t in S.tracks:
+        if t["selected"] is None:
+            t["selected"] = t["onDevice"]
+            changes.append((t["id"], t["selected"]))
+    INDEX.set_selected(changes)
+
+
+def publish_library(folder: str, recursive: bool, rows) -> None:
+    """Makes `rows` the loaded library, keeping in-memory ticks made while scanning."""
+    with S.lock:
+        same = S.library and library_key(S.library) == library_key(folder)
+        previous = S.by_id if same else {}
+        tracks = []
+        for row in sorted(rows, key=lambda r: r["rel"].lower()):
+            t = make_track(folder, row)
+            if t["id"] in previous:
+                t["selected"] = previous[t["id"]]["selected"]
+            if S.device:
+                t["onDevice"] = S.device.has(t)
+            tracks.append(t)
+        S.library, S.recursive, S.tracks = folder, recursive, tracks
+        S.by_id = {t["id"]: t for t in tracks}
+        resolve_undecided()
+        S.tracks_version += 1
+        S.save()
+
+
+def scan_library(job: Job, folder: str, recursive: bool) -> None:
+    key = library_key(folder)
+    job.message = "Opening the library index…"
+    cached = INDEX.load(key)
 
     with S.lock:
-        S.library, S.recursive, S.tracks = folder, recursive, tracks
-        if S.device:
-            job.message = "Checking which songs are on the device…"
-            S.device.scan()
-            for t in tracks:
-                t["onDevice"] = S.device.has(t)
-        S.save()
-    job.message = f"{len(tracks):,} songs loaded."
+        device = S.device
+    if device:
+        job.message = "Checking which songs are on the device…"
+        device.scan()
+
+    # 1. Show the saved library straight away, so it's usable while the folder is checked.
+    with S.lock:
+        already_shown = S.library and library_key(S.library) == key and S.tracks
+    if cached and not already_shown:
+        publish_library(folder, recursive, cached.values())
+
+    # 2. See what's actually in the folder now.
+    found = walk_music(folder, recursive, job)
+    seen, upserts = set(), []
+    for path, size, mtime_ns in found:
+        rel = os.path.relpath(path, folder)
+        relkey = norm_rel(rel)
+        seen.add(relkey)
+        c = cached.get(relkey)
+        if not c or c["size"] != size or c["mtime_ns"] != mtime_ns or c["rel"] != rel:
+            upserts.append({"path": path, "rel": rel, "relkey": relkey, "size": size, "mtime_ns": mtime_ns,
+                            "changed": c is not None})
+    removed = [c["id"] for k, c in cached.items() if k not in seen]
+
+    # 3. Read tags only for new or changed files.
+    job.total = len(upserts)
+    last = 0.0
+    for i, u in enumerate(upserts):
+        if job.cancel.is_set():
+            raise Cancelled()
+        u.update(read_tags(u["path"], u["size"]))
+        job.done = i + 1
+        if time.monotonic() - last > 0.25 or i + 1 == len(upserts):
+            job.message = f"Reading tags of new or changed files… {i + 1:,} of {len(upserts):,}"
+            last = time.monotonic()
+
+    # 4. Save the changes and load the updated library.
+    if upserts or removed or not cached:
+        INDEX.update(key, upserts, removed)
+        publish_library(folder, recursive, INDEX.load(key).values())
+    else:
+        with S.lock:
+            S.library, S.recursive = folder, recursive
+            S.save()
+
+    new = sum(1 for u in upserts if not u["changed"])
+    changed = len(upserts) - new
+    parts = [f"{new:,} new" if new else "", f"{changed:,} changed" if changed else "",
+             f"{len(removed):,} removed" if removed else ""]
+    detail = ", ".join(p for p in parts if p) or "no changes"
+    job.message = f"{len(found):,} songs ({detail})."
 
 
 def run_sync(job: Job, device: Device, to_copy: list, to_remove: list) -> None:
@@ -531,6 +706,7 @@ def get_state():
             "savedDevice": S.saved_device,
             "job": S.job.to_json(len(S.job.events)) if S.job else None,
             "trackCount": len(S.tracks),
+            "tracksVersion": S.tracks_version,
             "platform": "windows" if IS_WIN else sys.platform,
         })
 
@@ -538,7 +714,7 @@ def get_state():
 @app.get("/api/tracks")
 def get_tracks():
     with S.lock:
-        return jsonify({"tracks": [public_track(t) for t in S.tracks]})
+        return jsonify({"tracks": [public_track(t) for t in S.tracks], "version": S.tracks_version})
 
 
 @app.post("/api/library")
@@ -566,6 +742,7 @@ def _device_response():
             "device": S.device.to_json() if S.device else None,
             "savedDevice": S.saved_device,
             "onDevice": [t["id"] for t in S.tracks if t["onDevice"]],
+            "selected": [t["id"] for t in S.tracks if t["selected"]],
         })
 
 
@@ -589,8 +766,15 @@ def set_device():
         dev.scan()
         S.device = dev
         S.saved_device = dev.folder
+        # Songs already on the chosen device get ticked, so nothing there is proposed for deletion.
+        changes = []
         for t in S.tracks:
             t["onDevice"] = dev.has(t)
+            if t["onDevice"] and not t["selected"]:
+                t["selected"] = True
+                changes.append((t["id"], True))
+        INDEX.set_selected(changes)
+        resolve_undecided()
         S.save()
     return _device_response()
 
@@ -614,6 +798,7 @@ def refresh_device():
             S.device.scan()
         for t in S.tracks:
             t["onDevice"] = bool(S.device and S.device.has(t))
+        resolve_undecided()
     return _device_response()
 
 
@@ -641,6 +826,22 @@ def drives():
     })
 
 
+@app.post("/api/selection")
+def set_selection():
+    """Saves ticks/unticks so they survive restarts."""
+    body = request.get_json(silent=True) or {}
+    value = bool(body.get("selected"))
+    with S.lock:
+        changes = []
+        for i in body.get("ids", []):
+            t = S.by_id.get(i)
+            if t is not None and t["selected"] != value:
+                t["selected"] = value
+                changes.append((i, value))
+    INDEX.set_selected(changes)
+    return jsonify({"ok": True, "changed": len(changes)})
+
+
 @app.post("/api/sync")
 def sync():
     body = request.get_json(silent=True) or {}
@@ -648,7 +849,7 @@ def sync():
         device = S.device
         if not device:
             return error("Choose a device first.")
-        by_id = {t["id"]: t for t in S.tracks}
+        by_id = S.by_id
         to_copy = [by_id[i] for i in body.get("copy", []) if i in by_id and not by_id[i]["onDevice"]]
         to_remove = [by_id[i] for i in body.get("remove", []) if i in by_id and by_id[i]["onDevice"]]
     if not to_copy and not to_remove:
@@ -671,7 +872,11 @@ def sync():
 def job_status():
     since = request.args.get("since", default=0, type=int)
     with S.lock:
-        return jsonify(S.job.to_json(since) if S.job else None)
+        if not S.job:
+            return jsonify(None)
+        data = S.job.to_json(since)
+        data["tracksVersion"] = S.tracks_version
+        return jsonify(data)
 
 
 @app.post("/api/job/cancel")
@@ -685,7 +890,7 @@ def cancel_job():
 @app.get("/api/audio/<int:track_id>")
 def audio(track_id: int):
     with S.lock:
-        t = S.tracks[track_id] if 0 <= track_id < len(S.tracks) else None
+        t = S.by_id.get(track_id)
     if not t or not os.path.isfile(t["path"]):
         abort(404)
     ext = os.path.splitext(t["path"])[1].lower()
@@ -694,12 +899,41 @@ def audio(track_id: int):
                      conditional=True)
 
 
+@app.get("/api/check/<int:track_id>")
+def check_file(track_id: int):
+    """Called by the page when a song won't play, to work out why."""
+    with S.lock:
+        t = S.by_id.get(track_id)
+    if not t:
+        return jsonify({"known": False})
+    path = t["path"]
+    ext = os.path.splitext(path)[1].lower()
+    result = {"known": True, "exists": os.path.isfile(path), "readable": False, "size": 0,
+              "parses": False, "ext": ext, "mime": AUDIO_TYPES.get(ext, ""), "error": ""}
+    if not result["exists"]:
+        return jsonify(result)
+    try:
+        result["size"] = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.read(4096)
+        result["readable"] = True
+    except OSError as e:
+        result["error"] = e.strerror or str(e)
+        return jsonify(result)
+    try:
+        f = mutagen.File(path)
+        result["parses"] = bool(f is not None and getattr(f.info, "length", 0))
+    except Exception as e:
+        result["error"] = str(e)
+    return jsonify(result)
+
+
 @app.post("/api/reveal")
 def reveal():
     body = request.get_json(silent=True) or {}
     with S.lock:
         i = body.get("id")
-        t = S.tracks[i] if isinstance(i, int) and 0 <= i < len(S.tracks) else None
+        t = S.by_id.get(i) if isinstance(i, int) else None
     if not t:
         return error("Unknown song.")
     try:
