@@ -1,6 +1,6 @@
 # MusicSync (local web app)
 
-The same app as the Windows version, but the interface runs in your browser. A
+Web app created with Claude. Nothing fancy and needs some more work. A
 small Python server on your PC reads your music folder, streams songs to the
 page, and copies/removes songs on your external drive. It only listens on
 `127.0.0.1`, so nothing else on your network can reach it.
