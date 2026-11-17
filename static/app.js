@@ -97,7 +97,7 @@ function statusOf(t) {
 
 const byStr = (f) => (t) => (f(t) || "").toLowerCase();
 const COLS = [
-  { key: "selected", label: "On device?", cls: "c-check", sort: (t) => (t.selected ? 0 : 1) },
+  { key: "selected", label: "Synced?", cls: "c-check", sort: (t) => (t.selected ? 0 : 1) },
   { key: "status", label: "Device status", sort: (t) => STATUS[statusOf(t)].rank || 9 },
   { key: "title", label: "Title", cls: "c-title", text: (t) => t.title, sort: byStr((t) => t.title) },
   { key: "artist", label: "Artist", text: (t) => t.artist, sort: byStr((t) => t.artist) },
@@ -368,6 +368,7 @@ function updateSummary() {
     ? `${copy.toLocaleString()} to copy (${fmtSize(bytes)}), ${remove.toLocaleString()} to remove`
     : `${checked.toLocaleString()} checked`;
   $("#syncBtn").disabled = state.busy || !state.device || (copy === 0 && remove === 0);
+  $("#dupesBtn").disabled = state.busy || !state.device;
 }
 
 function updateDeviceInfo() {
@@ -587,6 +588,11 @@ $("#syncBtn").addEventListener("click", async () => {
       { okLabel: "Sync", cancel: true });
     if (!ok) return;
   }
+  await runSync(copy, remove);
+});
+
+/** Sends a sync to the server and follows it to the end. Used by Sync and by Detect duplicates. */
+async function runSync(copy, remove) {
   const requestedAt = Date.now() / 1000 - 2;
   try {
     await api.send("/api/sync", { copy, remove });
@@ -622,6 +628,83 @@ $("#syncBtn").addEventListener("click", async () => {
   } else if (job && job.cancelled) {
     setStatus("Sync cancelled. Songs already copied stay on the device.");
   }
+  return job;
+}
+
+// =====================================================================
+// Duplicates on the device
+// =====================================================================
+
+/** Groups songs on the device that share a file name (ignoring folder and extension) and artist. */
+function findDuplicates() {
+  const groups = new Map();
+  for (const t of state.tracks) {
+    if (!t.onDevice || !t.artist.trim()) continue;   // songs without an artist can't be compared
+    const file = t.rel.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+    const key = `${file.trim().toLowerCase()}\u0000${t.artist.trim().toLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  return [...groups.values()]
+    .filter((g) => g.length > 1)
+    // Best copy first: highest bitrate, then biggest file.
+    .map((g) => g.sort((a, b) => (b.bitrate - a.bitrate) || (b.size - a.size) || a.rel.localeCompare(b.rel)))
+    .sort((a, b) => a[0].artist.localeCompare(b[0].artist) || a[0].title.localeCompare(b[0].title));
+}
+
+/** Shows the duplicate groups. Resolves with the ids picked for removal, or null if cancelled. */
+function chooseDuplicates(groups) {
+  const dlg = $("#dupes"), list = $("#dupesList"), ok = $("#dupesOk");
+  const total = groups.reduce((n, g) => n + g.length, 0);
+  $("#dupesIntro").textContent =
+    `Found ${groups.length.toLocaleString()} song(s) with more than one copy on the device (${total.toLocaleString()} files). ` +
+    "Ticked files will be deleted from the device and unticked for syncing. " +
+    "The best-quality copy of each song is kept unticked; change the ticks if you prefer another one.";
+
+  list.innerHTML = groups.map((g, gi) => {
+    const file = g[0].rel.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+    const rows = g.map((t, i) => `
+      <label class="dupe-row">
+        <input type="checkbox" data-id="${t.id}" ${i > 0 ? "checked" : ""}>
+        <span class="dupe-path" title="${esc(t.rel)}">${esc(t.rel)}</span>
+        <span class="dupe-meta">${esc([t.album, t.bitrate ? `${t.bitrate} kbps` : "", fmtTime(t.duration), fmtSize(t.size)].filter(Boolean).join(", "))}</span>
+      </label>`).join("");
+    return `<li class="dupe-group"><div class="dupe-head">${esc(g[0].artist)}: ${esc(file)}</div>${rows}</li>`;
+  }).join("");
+
+  const picked = () => [...list.querySelectorAll("input:checked")].map((c) => +c.dataset.id);
+  const update = () => {
+    const n = picked().length;
+    ok.textContent = n ? `Remove ${n.toLocaleString()} from device` : "Remove from device";
+    ok.disabled = n === 0;
+    // Warn when every copy of a song is ticked.
+    for (const li of list.children) {
+      const boxes = li.querySelectorAll("input");
+      li.classList.toggle("all-picked", [...boxes].every((b) => b.checked));
+    }
+  };
+  list.onchange = update;
+  update();
+
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise((resolve) => dlg.addEventListener("close",
+    () => resolve(dlg.returnValue === "ok" ? picked() : null), { once: true }));
+}
+
+$("#dupesBtn").addEventListener("click", async () => {
+  if (!state.device) return;
+  const groups = findDuplicates();
+  if (!groups.length) {
+    const onDevice = state.tracks.filter((t) => t.onDevice).length;
+    message("No duplicates found",
+      `None of the ${onDevice.toLocaleString()} song(s) on the device share both a file name and an artist.`);
+    return;
+  }
+  const ids = await chooseDuplicates(groups);
+  if (!ids || !ids.length) return;
+  setChecked(ids, false);            // so the next sync doesn't copy them back
+  await runSync([], ids);
 });
 
 // =====================================================================

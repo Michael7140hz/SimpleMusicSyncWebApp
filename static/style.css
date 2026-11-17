@@ -73,8 +73,9 @@ button, input, select { font: inherit; color: inherit; }
 .bar-label { font-weight: 600; min-width: 92px; }
 .path { flex: 1 1 280px; min-width: 200px; }
 .filter { flex: 0 1 260px; margin-left: auto; }
-.device-info { flex: 1 1 240px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.summary { font-variant-numeric: tabular-nums; }
+.device-info { flex: 1 1 0; min-width: 60px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.summary { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.device-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .check { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
 
 input:not([type]), input[type=search], select {
@@ -82,7 +83,7 @@ input:not([type]), input[type=search], select {
   border: 1px solid var(--line); border-radius: 6px;
 }
 select { padding-right: 4px; }
-#driveSelect { width: 300px; max-width: 100%; }
+#driveSelect { width: 280px; max-width: 100%; }
 
 button {
   height: 32px; padding: 0 14px; border-radius: 6px; cursor: pointer;
@@ -232,3 +233,24 @@ dialog::backdrop { background: rgb(10 20 18 / .35); }
 .err-icon svg { width: 100%; height: 100%; display: block; }
 .err-icon path:first-child { fill: currentColor; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
 .err-icon .mark { fill: none; stroke: var(--surface); stroke-width: 2.2; stroke-linecap: round; }
+
+/* ---------- Duplicates dialog ---------- */
+dialog.wide { width: min(820px, 94vw); }
+.dupes-list {
+  list-style: none; margin: 0; padding: 0; max-height: 55vh; overflow: auto;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-alt);
+}
+.dupe-group { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.dupe-group:last-child { border-bottom: 0; }
+.dupe-head { font-weight: 650; margin-bottom: 4px; }
+.dupe-group.all-picked .dupe-head::after {
+  content: "  Every copy is ticked, so this song will be gone from the device";
+  font-weight: 400; color: var(--remove); font-size: 13px;
+}
+.dupe-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  padding: 3px 0; cursor: pointer;
+}
+.dupe-row input { accent-color: var(--remove); width: 16px; height: 16px; margin: 0; }
+.dupe-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dupe-meta { color: var(--muted); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
