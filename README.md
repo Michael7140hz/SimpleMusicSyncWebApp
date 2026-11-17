@@ -61,6 +61,29 @@ music folder) and the same size is in the device folder. Only files in the
 device folder are ever deleted, and the app refuses a device folder that
 overlaps your music folder.
 
+## Library index
+
+What’s stored: each file’s size, modified time and tags, plus whether you ticked it for the device. It lives in %AppData%\MusicSync\library-index.sqlite.
+On startup: your saved library appears straight away and is usable, including playback, while the folder is checked in the background.
+On rescan of the same folder: only new or changed files have their tags read, and files that are gone are dropped. The status bar sums it up, for example “12,345 songs (20 new, 3 changed, 5 removed)”. In my test, a rescan with no changes read zero tags, and one with a new and a changed file read just those two.
+Your ticks are saved as you make them. An unticked song still shows To remove after a restart, even if the drive wasn’t plugged in at the time.
+Songs you’ve never ticked or unticked start out ticked if they’re already on the device, as before.
+
+## Detect duplicates
+
+The button sits next to Sync to device and works whenever a device is connected.
+
+What counts as a duplicate: songs on the device with the same file name and the same artist.
+The folder, file extension and upper/lower case are ignored, so Album\Hello.mp3 and Hits\hello.flac by “The Band” match.
+Songs without an artist tag are skipped, since there’s nothing to compare.
+Songs with the same name by different artists are left alone.
+When duplicates are found: a list opens with each group’s files and their album, bitrate, length and size.
+The best copy in each group (highest bitrate, then largest file) is left unticked, and the others are ticked for removal. You can change the ticks.
+If you tick every copy of a song, a warning says it will be gone from the device.
+The button shows the count, for example Remove 1 from device. Pressing Cancel changes nothing.
+When you confirm: the ticked files are deleted from the device and unticked in the list, so the next sync won’t copy them back. Your original files aren’t touched.
+When there are none: a message says no duplicates were found.
+
 ## Offline install
 
 The `wheels` folder holds Flask, mutagen, pystray, Pillow and everything they
