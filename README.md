@@ -147,6 +147,16 @@ marker instead. Running **get-packages.bat** on a PC with internet adds the
 right build for that PC. You can also put an `ffmpeg.exe` in the app folder,
 or have FFmpeg on your PATH.
 
+`start.bat` installs the converter from the `wheels` folder, or downloads it if
+it isn't there and the PC is online, and keeps trying on each start until it
+succeeds. If `musicsync.log` says FFmpeg wasn't found, the reason is on the same
+line, and `converter-install.log` in the app folder shows what the install did.
+
+Note for the GitHub repo: the FFmpeg package
+(`wheels/imageio_ffmpeg-0.8.1-py3-none-win_amd64.whl`) is about 39 MB. GitHub's
+website only accepts uploads up to 25 MB, so add it with GitHub Desktop or
+`git push` (which allow files up to 100 MB).
+
 ## Offline install
 
 The `wheels` folder holds Flask, mutagen, pystray, Pillow and everything they

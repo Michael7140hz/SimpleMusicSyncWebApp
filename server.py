@@ -317,19 +317,32 @@ LOSSLESS_CODECS = ("pcm_", "alac", "flac", "wmalossless", "ape", "wavpack", "tta
 NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW: no console flash in tray mode
 
 
+FFMPEG_PROBLEM = ""
+
+
 def find_ffmpeg():
     """FFmpeg from the bundled imageio-ffmpeg package, an ffmpeg.exe in the app folder, or PATH."""
+    global FFMPEG_PROBLEM
+    problems = []
     try:
         import imageio_ffmpeg
         exe = imageio_ffmpeg.get_ffmpeg_exe()
         if exe and os.path.isfile(exe):
             return exe
-    except Exception:
-        pass
+        problems.append("imageio-ffmpeg is installed but has no FFmpeg program for this PC")
+    except ImportError:
+        problems.append("the imageio-ffmpeg package isn't installed (see converter-install.log)")
+    except Exception as e:
+        problems.append(f"imageio-ffmpeg failed: {e}")
     local = APP_DIR / ("ffmpeg.exe" if IS_WIN else "ffmpeg")
     if local.is_file():
         return str(local)
-    return shutil.which("ffmpeg")
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    problems.append(f"no {local.name} in the app folder and none on PATH")
+    FFMPEG_PROBLEM = "; ".join(problems)
+    return None
 
 
 FFMPEG = find_ffmpeg()
@@ -1269,7 +1282,10 @@ def main() -> None:
     if not tray:
         disable_quick_edit()
     log.info("MusicSync starting (Python %s, %s mode)", sys.version.split()[0], "tray" if tray else "console")
-    log.info("FFmpeg for converting: %s", FFMPEG or "not found (WMA, AIFF and similar won't play)")
+    if FFMPEG:
+        log.info("FFmpeg for converting: %s", FFMPEG)
+    else:
+        log.warning("FFmpeg not found, so WMA, AIFF and similar won't play: %s", FFMPEG_PROBLEM)
     restore_last_session()
 
     from werkzeug.serving import make_server

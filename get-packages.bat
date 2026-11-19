@@ -20,6 +20,7 @@ echo Using:
 %PY% --version
 if exist wheels rmdir /s /q wheels
 %PY% -m pip download --disable-pip-version-check --only-binary=:all: -r requirements.txt -d wheels
+if not errorlevel 1 %PY% -m pip download --disable-pip-version-check --only-binary=:all: -r requirements-convert.txt -d wheels
 if errorlevel 1 (
     echo.
     echo Download failed. The error is shown above.
