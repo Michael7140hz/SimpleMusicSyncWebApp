@@ -69,6 +69,9 @@ const state = {
   byId: new Map(),          // song id (stable, from the library index) -> song
   tracksVersion: -1,
   playErrors: new Map(),    // song id -> why it couldn't be played
+  canConvert: false,        // the server has FFmpeg to convert formats the browser can't play
+  convertIds: new Set(),    // songs found to need converting even though the format looked playable
+  playingConverted: null,
   view: [],                 // filtered + sorted list shown in the grid
   sortKey: null, sortDir: 1,
   filter: "",
@@ -748,15 +751,19 @@ class Player {
     this.trackPlays = 0;           // times the current song has played (auto-advance off)
     this.failures = 0;
     this.current = null; this.state = "stopped";
-    this.onchange = () => {}; this.onerror = () => {}; this.onplaying = () => {};
+    this.onchange = () => {}; this.onerror = async () => "skip"; this.onplaying = () => {};
+    this.resolve = async (track) => `/api/audio/${track.id}`;
+    this.loadToken = 0;
 
     audio.addEventListener("ended", () => this.onEnded());
     audio.addEventListener("playing", () => { this.failures = 0; if (this.current) this.onplaying(this.current); });
-    audio.addEventListener("error", () => {
-      if (!this.current) return;
-      this.onerror(this.current, audio.error);
-      if (!this.autoAdvance || ++this.failures >= Math.max(1, this.order.length)) { this.stop(); return; }
-      this.next();
+    audio.addEventListener("error", async () => {
+      const track = this.current, token = this.loadToken;
+      if (!track || !audio.getAttribute("src")) return;
+      const action = await this.onerror(track, audio.error, null);
+      if (this.current !== track || this.loadToken !== token) return;   // user moved on meanwhile
+      if (action === "retry") { this.load(track); return; }            // e.g. try a converted copy
+      this.skipFailed();
     });
   }
 
@@ -830,16 +837,38 @@ class Player {
   playIndex() {
     this.current = this.order[this.index];
     this.trackPlays = 1;
-    this.audio.src = `/api/audio/${this.current.id}`;
-    this.audio.play().catch(() => {});
     this.state = "playing";
     this.onchange();
+    this.load(this.current);
+  }
+
+  /** Works out where to load the song from (the original, or a converted copy), then plays it. */
+  async load(track) {
+    const token = ++this.loadToken;
+    let url;
+    try {
+      url = await this.resolve(track);
+    } catch (err) {
+      if (this.loadToken !== token) return;
+      await this.onerror(track, null, err.message);
+      if (this.loadToken === token) this.skipFailed();
+      return;
+    }
+    if (this.loadToken !== token || this.current !== track) return;
+    this.audio.src = url;
+    if (this.state === "playing") this.audio.play().catch(() => {});
+  }
+
+  skipFailed() {
+    if (!this.autoAdvance || ++this.failures >= Math.max(1, this.order.length)) { this.stop(); return; }
+    this.next();
   }
 
   pause() { if (this.state !== "playing") return; this.audio.pause(); this.state = "paused"; this.onchange(); }
   resume() { if (this.state !== "paused") return; this.audio.play().catch(() => {}); this.state = "playing"; this.onchange(); }
 
   stop() {
+    this.loadToken++;
     this.current = null;
     this.audio.pause();
     this.audio.removeAttribute("src");
@@ -887,7 +916,9 @@ async function explainPlayError(track, mediaError) {
   else if (!chk.exists) reason = "File not found. It may have been moved, renamed or deleted. Rescan the library to update the list.";
   else if (!chk.readable) reason = `Couldn't read the file${chk.error ? ` (${chk.error})` : ""}. The drive may be busy, failing or disconnected.`;
   else if (chk.size === 0) reason = "The file is empty (0 bytes).";
-  else if (chk.mime && audio.canPlayType(chk.mime) === "") reason = `This browser can't play ${ext} files.`;
+  else if (chk.mime && audio.canPlayType(chk.mime) === "") reason = state.canConvert
+    ? `This browser can't play ${ext} files, and converting it didn't work.`
+    : `This browser can't play ${ext} files, and FFmpeg isn't installed to convert them (see the README).`;
   else if (!chk.parses) reason = "The file looks damaged: its audio data couldn't be read.";
   else if (code === MediaError.MEDIA_ERR_DECODE) reason = "The file is damaged, or its audio uses a codec this browser can't decode.";
   else if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) reason = `The audio inside this ${ext} file uses a codec this browser doesn't support.`;
@@ -898,10 +929,73 @@ async function explainPlayError(track, mediaError) {
   render();
   setStatus(`Couldn't play “${track.title}”: ${reason}`);
 }
-player.onerror = (track, mediaError) => { explainPlayError(track, mediaError); };
+// ---------- Converting formats the browser can't play ----------
+const MIME_BY_EXT = {
+  mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav", flac: "audio/flac",
+  ogg: "audio/ogg", opus: "audio/ogg; codecs=opus", wma: "audio/x-ms-wma", aif: "audio/aiff", aiff: "audio/aiff",
+  ape: "audio/x-ape", wv: "audio/x-wavpack", mpc: "audio/x-musepack", tta: "audio/x-tta", dsf: "audio/x-dsf",
+};
+const extOf = (t) => (t.rel.match(/\.([^.\\/]+)$/) || [, ""])[1].toLowerCase();
+const needsConversion = (t) =>
+  state.convertIds.has(t.id) || audio.canPlayType(MIME_BY_EXT[extOf(t)] || "audio/x-unknown") === "";
+const converting = new Map();     // id -> promise, so a song is only converted once at a time
+
+function convertTrack(t) {
+  if (!converting.has(t.id)) {
+    const p = api.send(`/api/convert/${t.id}`).finally(() => converting.delete(t.id));
+    converting.set(t.id, p);
+  }
+  return converting.get(t.id);
+}
+
+player.resolve = async (t) => {
+  if (!state.canConvert || !needsConversion(t)) { state.playingConverted = null; return `/api/audio/${t.id}`; }
+  setStatus(`Converting “${t.title}” (${extOf(t).toUpperCase()}) so this browser can play it…`);
+  let res;
+  try { res = await convertTrack(t); }
+  catch (err) { throw new Error(`Couldn't convert it for playback: ${err.message}`); }
+  state.playingConverted = { id: t.id, from: extOf(t).toUpperCase(), to: res.format };
+  setStatus(`Playing “${t.title}” converted from ${extOf(t).toUpperCase()} to ${res.format}.`);
+  return `/api/converted/${t.id}`;
+};
+
+player.onerror = async (track, mediaError, convertReason) => {
+  if (convertReason) {
+    state.playErrors.set(track.id, convertReason);
+    render();
+    setStatus(`Couldn't play “${track.title}”: ${convertReason}`);
+    return "skip";
+  }
+  // The browser couldn't play the original. If the file itself is fine, try a converted copy once.
+  if (state.canConvert && !state.convertIds.has(track.id)) {
+    let chk = null;
+    try { chk = await api.get(`/api/check/${track.id}`); } catch { /* fall through */ }
+    if (chk && chk.exists && chk.readable && chk.size > 0) {
+      state.convertIds.add(track.id);
+      return "retry";
+    }
+  }
+  await explainPlayError(track, mediaError);
+  return "skip";
+};
+
 player.onplaying = (track) => {
   if (state.playErrors.delete(track.id)) render();   // it plays now (e.g. the file was fixed)
+  updateNowSub();
+  // Convert the next song ahead of time so it starts without a wait.
+  if (state.canConvert && player.autoAdvance && player.order.length > 1) {
+    const next = player.order[(player.index + 1) % player.order.length];
+    if (next && next !== track && needsConversion(next)) convertTrack(next).catch(() => {});
+  }
 };
+
+function updateNowSub() {
+  const t = player.current;
+  if (!t) return;
+  const base = [t.artist, t.album].filter(Boolean).join(", ") || t.rel;
+  const c = state.playingConverted;
+  $("#nowSub").textContent = c && c.id === t.id ? `${base}  ·  converted from ${c.from} for playback` : base;
+}
 player.onchange = () => {
   const t = player.current;
   const playing = player.state === "playing";
@@ -909,7 +1003,7 @@ player.onchange = () => {
   $("#playBtn").setAttribute("aria-label", playing ? "Pause" : "Play");
   if (t) {
     $("#nowTitle").textContent = (player.state === "paused" ? "Paused: " : "") + t.title;
-    $("#nowSub").textContent = [t.artist, t.album].filter(Boolean).join(", ") || t.rel;
+    updateNowSub();
     document.title = `${t.title} – MusicSync`;
     const i = indexInView(t.id);
     if (i >= 0) ensureVisible(i);
@@ -1091,6 +1185,7 @@ function pickFolder(title, start, { mustExist }) {
   applyView();
   try {
     const s = await api.get("/api/state");
+    state.canConvert = !!s.canConvert;
     $("#recursive").checked = s.recursive;
     if (s.library) $("#libraryPath").value = s.library;
     state.device = s.device;

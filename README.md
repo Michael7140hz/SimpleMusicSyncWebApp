@@ -41,6 +41,7 @@ Prefer a console window? Use **start-console.bat** instead (Ctrl+C stops it).
 Manual start on any OS:
 
     pip install -r requirements.txt
+    pip install -r requirements-convert.txt   # optional: FFmpeg for WMA, AIFF, ALAC...
     python server.py              # tray icon
     python server.py --console    # console window
 
@@ -60,6 +61,9 @@ the browser.
   - **Auto-advance** (on by default): go on to the next song when one ends.
     With it on, repeat applies to the whole list (once = list plays twice).
     With it off, repeat applies to the current song (once = song plays twice).
+
+  Formats the browser can't play are converted automatically (see "Playing
+  every format").
 - **Light/dark:** the sun/moon button at the top right switches themes. Until
   you use it, the app follows your Windows setting.
 - **Device:** pick a drive (songs go into `X:\Music\`) or **Choose folder…**.
@@ -67,7 +71,7 @@ the browser.
   The folder is remembered: if the drive isn't plugged in, the app says so and
   reconnects by itself within a few seconds of you plugging it in (or press
   the refresh button). Your ticks are kept while it's unplugged.
-- **Ticking songs:** use the *On device?* checkboxes, or highlight rows
+- **Ticking songs:** use the *Synced?* checkboxes, or highlight rows
   (Shift/Ctrl-click, Ctrl+A) and press Space. Right-click for more options.
   The *Device status* column shows **To copy**, **On device** or **To remove**.
   Nothing on the drive changes until you press **Sync to device**.
@@ -84,6 +88,7 @@ On startup: your saved library appears straight away and is usable, including pl
 On rescan of the same folder: only new or changed files have their tags read, and files that are gone are dropped. The status bar sums it up, for example “12,345 songs (20 new, 3 changed, 5 removed)”. In my test, a rescan with no changes read zero tags, and one with a new and a changed file read just those two.
 Your ticks are saved as you make them. An unticked song still shows To remove after a restart, even if the drive wasn’t plugged in at the time.
 Songs you’ve never ticked or unticked start out ticked if they’re already on the device, as before.
+To rebuild the index from scratch (for example to re-read every song’s tags), quit MusicSync and delete library-index.sqlite. Your ticks are stored in it too, so they’ll be reset.
 
 ## Detect Duplicates
 
@@ -102,11 +107,52 @@ The button shows the count, for example Remove 1 from device. Pressing Cancel ch
 When you confirm: the ticked files are deleted from the device and unticked in the list, so the next sync won’t copy them back. Your original files aren’t touched.
 When there are none: a message says no duplicates were found.
 
+## Playing every format
+
+Browsers only play some audio formats natively (MP3, AAC/M4A, WAV, FLAC, and
+OGG/Opus in most). For everything else, MusicSync converts the song with
+**FFmpeg** when you play it, so the same files play in Chrome, Edge, Firefox
+and Safari:
+
+- WMA, AIFF, Apple Lossless (ALAC) in .m4a, APE, WavPack (.wv), Musepack
+  (.mpc), TTA and DSD (.dsf) are converted automatically.
+- Lossless sources become FLAC (no quality lost); lossy sources become
+  320 kbps MP3.
+- If a file in a "normal" format still won't play in your browser (an unusual
+  codec inside, for example), a converted copy is tried before giving up.
+- Conversion takes a moment the first time; the result is cached in
+  `%LocalAppData%\MusicSync\converted` (up to 2 GB, oldest removed first),
+  so later plays start straight away. The next song in the queue is converted
+  ahead of time.
+- The player shows "converted from WMA for playback" (or similar) while a
+  converted copy is playing.
+- Syncing is unaffected: your device always gets the original files.
+
+### Songs that won't play
+
+A red warning marker appears before the title of any song that couldn't be
+played, even after trying a converted copy. Hover over it to see why: file not
+found (moved or deleted, so rescan), file can't be read (drive busy, failing or
+disconnected), file is empty, file is damaged, or the format isn't supported
+and FFmpeg isn't installed to convert it. The marker disappears if the song
+plays successfully later.
+
+### Where FFmpeg comes from
+
+FFmpeg comes from the `imageio-ffmpeg` package and is installed by
+`start.bat` as an optional extra. The `wheels` folder includes the 64-bit
+Windows build. If it can't be installed (e.g. ARM64 or 32-bit Windows while
+offline), MusicSync still runs, and unsupported formats show the warning
+marker instead. Running **get-packages.bat** on a PC with internet adds the
+right build for that PC. You can also put an `ffmpeg.exe` in the app folder,
+or have FFmpeg on your PATH.
+
 ## Offline install
 
 The `wheels` folder holds Flask, mutagen, pystray, Pillow and everything they
 need, built for
-**Python 3.15 on Windows** (64-bit, ARM64 and 32-bit). `start.bat` installs from
+**Python 3.15 on Windows** (64-bit, ARM64 and 32-bit), plus the optional
+FFmpeg converter for 64-bit Windows. `start.bat` installs from
 it automatically when it's there.
 
 For a different Python version: on any PC with internet and that same Python
@@ -124,7 +170,8 @@ Then copy the whole folder to the offline PC and run `start.bat`. Delete the
   aliases, and turn off the `python.exe` / `python3.exe` entries labelled
   "App Installer". Leave the ones labelled "Python install manager" on.
 - You can always start the app by hand with the full path to Python, e.g.
-  `"C:\Path\To\python.exe" -m pip install -r requirements.txt` followed by
+  `"C:\Path\To\python.exe" -m pip install -r requirements.txt` (and, for the
+  converter, `-r requirements-convert.txt`) followed by
   `"C:\Path\To\python.exe" server.py`.
 
 ## If a sync says the server isn't answering
@@ -132,17 +179,22 @@ Then copy the whole folder to the offline PC and run `start.bat`. Delete the
 - Check the MusicSync tray icon is still there. If it's gone, run `start.bat`
   again.
 - Security software can block or stop programs that delete files from USB
-  drives. Check whether it flagged `python.exe`, and allow it if so.
+  drives. Check whether it flagged `pythonw.exe` (or `python.exe` when using
+  start-console.bat), and allow it if so.
 - `musicsync.log` (and `musicsync.crash.log`, if Python crashed) in the app
   folder record what happened, including the exact error for any file that
   couldn't be copied or removed.
 
 ## Notes
 
-- Playback uses your browser's codecs. In Chrome and Edge, MP3, M4A/AAC, WAV,
-  FLAC, OGG and Opus all play. WMA and AIFF are listed but won't play.
+- File types found by the scan: MP3, M4A, AAC, WAV, FLAC, OGG, Opus, WMA, AIFF,
+  APE, WavPack (.wv), Musepack (.mpc), TTA and DSD (.dsf).
 - Phones that connect as "media devices" (MTP) have no drive letter, so they
   can't be chosen.
 - Very large libraries are fine: only the rows on screen are drawn.
-- Settings are saved in `%AppData%\MusicSync\web-settings.json`; play mode and
-  volume are remembered by the browser.
+- Settings are saved in `%AppData%\MusicSync\web-settings.json`; play mode,
+  volume and light/dark choice are remembered by the browser.
+- Files MusicSync keeps: settings and the library index in
+  `%AppData%\MusicSync\`, converted copies for playback in
+  `%LocalAppData%\MusicSync\converted\`, and `musicsync.log` in the app folder
+  (tray icon > Show log file).

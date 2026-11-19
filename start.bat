@@ -48,6 +48,22 @@ echo Setup complete.
 echo.
 
 :run
+rem Optional FFmpeg for playing formats the browser can't (WMA, AIFF, ALAC...).
+rem Tried once; if it can't be installed, MusicSync still runs without it.
+if not exist ".venv\musicsync-ffmpeg-ready" if exist requirements-convert.txt (
+    echo Installing the audio converter, used to play WMA, AIFF and similar formats...
+    if exist "wheels\*.whl" (
+        ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check --no-index --find-links wheels -r requirements-convert.txt >nul 2>nul
+    ) else (
+        ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements-convert.txt >nul 2>nul
+    )
+    if errorlevel 1 (
+        echo   Not available for this PC. MusicSync will run without it.
+    ) else (
+        echo ok> ".venv\musicsync-ffmpeg-ready"
+    )
+)
+
 rem Quick check that everything imports, since the tray version has no window to show errors in.
 ".venv\Scripts\python.exe" -c "import flask, mutagen" 2>nul
 if errorlevel 1 goto :broken

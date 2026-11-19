@@ -1,0 +1,3 @@
+# Optional: FFmpeg, used to convert formats the browser can't play (WMA, AIFF, ALAC, APE...).
+# MusicSync works without it; those formats just won't play.
+imageio-ffmpeg>=0.5

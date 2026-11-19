@@ -40,11 +40,14 @@ PORT = int(os.environ.get("MUSICSYNC_PORT", "8765"))
 APP_DIR = Path(__file__).resolve().parent
 IS_WIN = os.name == "nt"
 
-EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma", ".aif", ".aiff"}
+EXTENSIONS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma", ".aif", ".aiff",
+              ".ape", ".wv", ".mpc", ".tta", ".dsf"}
 AUDIO_TYPES = {
     ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav",
     ".flac": "audio/flac", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wma": "audio/x-ms-wma",
     ".aif": "audio/aiff", ".aiff": "audio/aiff",
+    ".ape": "audio/x-ape", ".wv": "audio/x-wavpack", ".mpc": "audio/x-musepack",
+    ".tta": "audio/x-tta", ".dsf": "audio/x-dsf",
 }
 PARTIAL = ".musicsync-partial"
 
@@ -163,7 +166,12 @@ def _first(tags, *keys) -> str:
         if not v:
             continue
         if isinstance(v, list):
-            v = ", ".join(str(x) for x in v if str(x).strip())
+            seen, parts = set(), []
+            for x in v:                      # some formats store the same value twice
+                x = str(x).strip()
+                if x and x.lower() not in seen:
+                    seen.add(x.lower()); parts.append(x)
+            v = ", ".join(parts)
         v = str(v).strip()
         if v:
             return v
@@ -295,6 +303,137 @@ def _index_path() -> Path:
 
 
 INDEX = LibraryIndex(_index_path())
+
+
+# ---------------------------------------------------------------------------
+# Converting formats the browser can't play (WMA, AIFF, ALAC, APE, ...).
+# FFmpeg turns them into FLAC (lossless sources) or 320 kbps MP3 (lossy sources),
+# which every modern browser plays. Results are cached so each file is only
+# converted once; the cache is trimmed to CONVERT_CACHE_LIMIT.
+# ---------------------------------------------------------------------------
+
+CONVERT_CACHE_LIMIT = 2 * 1024 ** 3      # 2 GB
+LOSSLESS_CODECS = ("pcm_", "alac", "flac", "wmalossless", "ape", "wavpack", "tta", "mlp", "truehd", "dsd_")
+NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW: no console flash in tray mode
+
+
+def find_ffmpeg():
+    """FFmpeg from the bundled imageio-ffmpeg package, an ffmpeg.exe in the app folder, or PATH."""
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.isfile(exe):
+            return exe
+    except Exception:
+        pass
+    local = APP_DIR / ("ffmpeg.exe" if IS_WIN else "ffmpeg")
+    if local.is_file():
+        return str(local)
+    return shutil.which("ffmpeg")
+
+
+FFMPEG = find_ffmpeg()
+
+
+def _convert_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home() / ".cache")
+    return Path(base) / "MusicSync" / "converted"
+
+
+CONVERT_DIR = _convert_dir()
+_convert_locks: dict[str, threading.Lock] = {}
+_convert_locks_guard = threading.Lock()
+
+
+class ConvertError(Exception):
+    pass
+
+
+def _probe_audio(path: str) -> tuple[str, int]:
+    """(codec name, sample rate) of the first audio stream, read from FFmpeg's description."""
+    r = subprocess.run([FFMPEG, "-hide_banner", "-i", path], capture_output=True, text=True,
+                       errors="replace", creationflags=NO_WINDOW, timeout=60)
+    import re
+    m = re.search(r"Audio:\s*([\w-]+)[^\n]*?(\d+)\s*Hz", r.stderr)
+    if not m:
+        raise ConvertError("FFmpeg found no audio in this file. It may be damaged.")
+    return m.group(1).lower(), int(m.group(2))
+
+
+def converted_file(t: dict) -> Path:
+    """Returns a browser-friendly copy of the song, converting it first if needed."""
+    if not FFMPEG:
+        raise ConvertError("FFmpeg isn't installed, so this format can't be converted for playback.")
+    src = t["path"]
+    try:
+        st = os.stat(src)
+    except OSError as e:
+        raise ConvertError(f"Couldn't read the file ({e.strerror or e}).")
+    stem = f"{t['id']}-{st.st_size}-{st.st_mtime_ns}"
+
+    with _convert_locks_guard:
+        lock = _convert_locks.setdefault(stem, threading.Lock())
+    with lock:                                   # one conversion per song at a time
+        for ext in (".flac", ".mp3"):
+            done = CONVERT_DIR / (stem + ext)
+            if done.is_file():
+                os.utime(done)                   # mark as recently used
+                return done
+
+        codec, rate = _probe_audio(src)
+        lossless = codec.startswith(LOSSLESS_CODECS)
+        CONVERT_DIR.mkdir(parents=True, exist_ok=True)
+        out = CONVERT_DIR / (stem + (".flac" if lossless else ".mp3"))
+        tmp = out.with_name(out.stem + ".part" + out.suffix)
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vn", "-map", "0:a:0",
+               "-map_metadata", "-1"]
+        if lossless:
+            # FLAC tops out at 655 kHz; DSD sources get a sensible high-resolution rate.
+            cmd += ["-c:a", "flac"] + (["-ar", "88200", "-sample_fmt", "s32"] if codec.startswith("dsd_") else [])
+        else:
+            cmd += ["-c:a", "libmp3lame", "-b:a", "320k"] + (["-ar", "48000"] if rate > 48000 else [])
+        cmd.append(str(tmp))
+        started = time.monotonic()
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                               creationflags=NO_WINDOW, timeout=600)
+        except subprocess.TimeoutExpired:
+            _try_remove(str(tmp))
+            raise ConvertError("Converting took too long and was stopped.")
+        if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size == 0:
+            _try_remove(str(tmp))
+            detail = (r.stderr or "").strip().splitlines()[-1:] or ["unknown error"]
+            log.warning("Conversion failed for %s: %s", src, r.stderr.strip()[-500:])
+            raise ConvertError(f"FFmpeg couldn't convert it ({detail[0][:160]}). The file may be damaged.")
+        os.replace(tmp, out)
+        log.info("Converted %s (%s) to %s in %.1fs", t["rel"], codec, out.suffix[1:].upper(),
+                 time.monotonic() - started)
+    _trim_convert_cache()
+    return out
+
+
+def _trim_convert_cache() -> None:
+    try:
+        files = [f for f in CONVERT_DIR.iterdir() if f.is_file()]
+    except OSError:
+        return
+    stats = []
+    for f in files:
+        try:
+            stats.append((f.stat().st_mtime, f.stat().st_size, f))
+        except OSError:
+            pass
+    total = sum(s for _, s, _ in stats)
+    for _, size, f in sorted(stats, key=lambda x: x[0]):   # oldest first
+        if total <= CONVERT_CACHE_LIMIT:
+            break
+        if ".part" in f.name:
+            continue
+        try:
+            f.unlink()
+            total -= size
+        except OSError:
+            pass
 
 
 def public_track(t: dict) -> dict:
@@ -706,6 +845,7 @@ def get_state():
             "savedDevice": S.saved_device,
             "job": S.job.to_json(len(S.job.events)) if S.job else None,
             "trackCount": len(S.tracks),
+            "canConvert": bool(FFMPEG),
             "tracksVersion": S.tracks_version,
             "platform": "windows" if IS_WIN else sys.platform,
         })
@@ -897,6 +1037,34 @@ def audio(track_id: int):
     # conditional=True enables range requests, which the browser needs for seeking
     return send_file(t["path"], mimetype=AUDIO_TYPES.get(ext) or mimetypes.guess_type(t["path"])[0],
                      conditional=True)
+
+
+@app.post("/api/convert/<int:track_id>")
+def convert(track_id: int):
+    """Prepares a browser-friendly copy of a song. Can take a few seconds."""
+    with S.lock:
+        t = S.by_id.get(track_id)
+    if not t:
+        return error("Unknown song.", 404)
+    try:
+        out = converted_file(t)
+    except ConvertError as e:
+        return error(str(e), 422)
+    return jsonify({"ok": True, "format": out.suffix[1:].upper()})
+
+
+@app.get("/api/converted/<int:track_id>")
+def converted_audio(track_id: int):
+    with S.lock:
+        t = S.by_id.get(track_id)
+    if not t:
+        abort(404)
+    try:
+        out = converted_file(t)      # instant when already converted
+    except ConvertError:
+        abort(404)
+    mime = "audio/flac" if out.suffix == ".flac" else "audio/mpeg"
+    return send_file(out, mimetype=mime, conditional=True)
 
 
 @app.get("/api/check/<int:track_id>")
@@ -1101,6 +1269,7 @@ def main() -> None:
     if not tray:
         disable_quick_edit()
     log.info("MusicSync starting (Python %s, %s mode)", sys.version.split()[0], "tray" if tray else "console")
+    log.info("FFmpeg for converting: %s", FFMPEG or "not found (WMA, AIFF and similar won't play)")
     restore_last_session()
 
     from werkzeug.serving import make_server
