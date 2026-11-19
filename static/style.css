@@ -235,22 +235,32 @@ dialog::backdrop { background: rgb(10 20 18 / .35); }
 .err-icon .mark { fill: none; stroke: var(--surface); stroke-width: 2.2; stroke-linecap: round; }
 
 /* ---------- Duplicates dialog ---------- */
-dialog.wide { width: min(820px, 94vw); }
+dialog.wide { width: min(980px, 96vw); }
 .dupes-list {
-  list-style: none; margin: 0; padding: 0; max-height: 55vh; overflow: auto;
+  list-style: none; margin: 0; padding: 0; max-height: 58vh; overflow: auto;
   border: 1px solid var(--line); border-radius: 6px; background: var(--surface-alt);
 }
-.dupe-group { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.dupe-group { padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .dupe-group:last-child { border-bottom: 0; }
-.dupe-head { font-weight: 650; margin-bottom: 4px; }
+.dupe-head { font-weight: 650; margin-bottom: 6px; }
+.dupe-note { display: block; font-weight: 400; font-size: 13px; color: var(--copy); }
 .dupe-group.all-picked .dupe-head::after {
-  content: "  Every copy is ticked, so this song will be gone from the device";
-  font-weight: 400; color: var(--remove); font-size: 13px;
+  content: "Every copy is ticked, so this song will be gone from the device";
+  display: block; font-weight: 400; color: var(--remove); font-size: 13px;
 }
-.dupe-row {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px;
-  padding: 3px 0; cursor: pointer;
+.dupe-cols {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 52px minmax(160px, 2.2fr) 58px 58px 76px 70px minmax(90px, 1fr);
 }
-.dupe-row input { accent-color: var(--remove); width: 16px; height: 16px; margin: 0; }
-.dupe-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dupe-meta { color: var(--muted); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dupe-colhead { font-size: 12px; color: var(--muted); padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+.dupe-row { padding: 5px 0; cursor: pointer; font-variant-numeric: tabular-nums; }
+.dupe-row:hover { background: var(--accent-soft); }
+.dupe-row input { accent-color: var(--remove); width: 16px; height: 16px; margin: 0 0 0 14px; }
+.dupe-cols .num { text-align: right; }
+.dupe-file, .dupe-album { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dupe-file small { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.dupe-album { color: var(--muted); }
+.type-chip {
+  display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700;
+  letter-spacing: .03em; background: var(--accent-soft); color: var(--accent);
+}

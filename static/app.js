@@ -591,7 +591,7 @@ $("#syncBtn").addEventListener("click", async () => {
   await runSync(copy, remove);
 });
 
-/** Sends a sync to the server and follows it to the end. Used by Sync and by Detect duplicates. */
+/** Sends a sync to the server and follows it to the end. Used by Sync and by Detect Duplicates. */
 async function runSync(copy, remove) {
   const requestedAt = Date.now() / 1000 - 2;
   try {
@@ -635,20 +635,35 @@ async function runSync(copy, remove) {
 // Duplicates on the device
 // =====================================================================
 
-/** Groups songs on the device that share a file name (ignoring folder and extension) and artist. */
+/** Strips copy markers such as "(1)", "[2]", "- Copy", "copy (3)" from the end of a title or file name. */
+const COPY_MARKER = /(?:\s*(?:[-_]\s*)?(?:\(\s*\d{1,2}\s*\)|\[\s*\d{1,2}\s*\]|\(\s*copy(?:\s*\d{1,2})?\s*\)|copy(?:\s*\(\s*\d{1,2}\s*\)|\s+\d{1,2})?))+$/i;
+function cleanTitle(text) {
+  let t = String(text || "").trim();
+  for (let prev = ""; prev !== t; ) { prev = t; t = t.replace(COPY_MARKER, "").trim(); }
+  return t.replace(/\s+/g, " ").toLowerCase();
+}
+const fileOf = (rel) => rel.split(/[\\/]/).pop();
+const folderOf = (rel) => { const p = rel.split(/[\\/]/); p.pop(); return p.join("\\") || "(top folder)"; };
+const typeOf = (rel) => { const m = rel.match(/\.([^.\\/]+)$/); return m ? m[1].toUpperCase() : "?"; };
+const hasCopyMarker = (rel) => COPY_MARKER.test(fileOf(rel).replace(/\.[^.]+$/, ""));
+
+/** Groups songs on the device that share a song title (copy markers ignored) and artist. */
 function findDuplicates() {
   const groups = new Map();
   for (const t of state.tracks) {
     if (!t.onDevice || !t.artist.trim()) continue;   // songs without an artist can't be compared
-    const file = t.rel.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
-    const key = `${file.trim().toLowerCase()}\u0000${t.artist.trim().toLowerCase()}`;
+    const title = cleanTitle(t.title);
+    if (!title) continue;
+    const key = `${title}\u0000${t.artist.trim().toLowerCase()}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(t);
   }
   return [...groups.values()]
     .filter((g) => g.length > 1)
-    // Best copy first: highest bitrate, then biggest file.
-    .map((g) => g.sort((a, b) => (b.bitrate - a.bitrate) || (b.size - a.size) || a.rel.localeCompare(b.rel)))
+    // Best copy first: highest bitrate, then a name without "(1)"/"copy", then biggest file.
+    .map((g) => g.sort((a, b) => (b.bitrate - a.bitrate)
+      || (hasCopyMarker(a.rel) - hasCopyMarker(b.rel))
+      || (b.size - a.size) || a.rel.localeCompare(b.rel)))
     .sort((a, b) => a[0].artist.localeCompare(b[0].artist) || a[0].title.localeCompare(b[0].title));
 }
 
@@ -659,17 +674,26 @@ function chooseDuplicates(groups) {
   $("#dupesIntro").textContent =
     `Found ${groups.length.toLocaleString()} song(s) with more than one copy on the device (${total.toLocaleString()} files). ` +
     "Ticked files will be deleted from the device and unticked for syncing. " +
-    "The best-quality copy of each song is kept unticked; change the ticks if you prefer another one.";
+    "The best copy of each song (highest bitrate) is left unticked; change the ticks to keep a different version.";
 
-  list.innerHTML = groups.map((g, gi) => {
-    const file = g[0].rel.split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
+  const head = `<div class="dupe-cols dupe-colhead">
+      <span>Remove</span><span>File name</span><span>Type</span><span class="num">Length</span>
+      <span class="num">Bitrate</span><span class="num">Size</span><span>Album</span></div>`;
+  list.innerHTML = groups.map((g) => {
+    const lengths = new Set(g.map((t) => Math.round(t.duration)));
     const rows = g.map((t, i) => `
-      <label class="dupe-row">
-        <input type="checkbox" data-id="${t.id}" ${i > 0 ? "checked" : ""}>
-        <span class="dupe-path" title="${esc(t.rel)}">${esc(t.rel)}</span>
-        <span class="dupe-meta">${esc([t.album, t.bitrate ? `${t.bitrate} kbps` : "", fmtTime(t.duration), fmtSize(t.size)].filter(Boolean).join(", "))}</span>
+      <label class="dupe-cols dupe-row">
+        <input type="checkbox" data-id="${t.id}" ${i > 0 ? "checked" : ""} aria-label="Remove ${esc(fileOf(t.rel))}">
+        <span class="dupe-file" title="${esc(t.rel)}">${esc(fileOf(t.rel))}<small>${esc(folderOf(t.rel))}</small></span>
+        <span><span class="type-chip">${esc(typeOf(t.rel))}</span></span>
+        <span class="num">${fmtTime(t.duration)}</span>
+        <span class="num">${t.bitrate ? `${t.bitrate} kbps` : "–"}</span>
+        <span class="num">${fmtSize(t.size)}</span>
+        <span class="dupe-album" title="${esc(t.album)}">${esc(t.album || "–")}</span>
       </label>`).join("");
-    return `<li class="dupe-group"><div class="dupe-head">${esc(g[0].artist)}: ${esc(file)}</div>${rows}</li>`;
+    const note = lengths.size > 1 && Math.max(...lengths) - Math.min(...lengths) > 5
+      ? `<span class="dupe-note">Lengths differ; these may be different versions (live, remix, edit).</span>` : "";
+    return `<li class="dupe-group"><div class="dupe-head">${esc(g[0].artist)} – ${esc(g[0].title)}${note}</div>${head}${rows}</li>`;
   }).join("");
 
   const picked = () => [...list.querySelectorAll("input:checked")].map((c) => +c.dataset.id);
@@ -677,7 +701,6 @@ function chooseDuplicates(groups) {
     const n = picked().length;
     ok.textContent = n ? `Remove ${n.toLocaleString()} from device` : "Remove from device";
     ok.disabled = n === 0;
-    // Warn when every copy of a song is ticked.
     for (const li of list.children) {
       const boxes = li.querySelectorAll("input");
       li.classList.toggle("all-picked", [...boxes].every((b) => b.checked));
@@ -698,7 +721,7 @@ $("#dupesBtn").addEventListener("click", async () => {
   if (!groups.length) {
     const onDevice = state.tracks.filter((t) => t.onDevice).length;
     message("No duplicates found",
-      `None of the ${onDevice.toLocaleString()} song(s) on the device share both a file name and an artist.`);
+      `None of the ${onDevice.toLocaleString()} song(s) on the device share both a song title and an artist.`);
     return;
   }
   const ids = await chooseDuplicates(groups);

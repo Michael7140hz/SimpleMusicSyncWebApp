@@ -69,16 +69,18 @@ On rescan of the same folder: only new or changed files have their tags read, an
 Your ticks are saved as you make them. An unticked song still shows To remove after a restart, even if the drive wasn’t plugged in at the time.
 Songs you’ve never ticked or unticked start out ticked if they’re already on the device, as before.
 
-## Detect duplicates
+## Detect Duplicates
 
 The button sits next to Sync to device and works whenever a device is connected.
 
-What counts as a duplicate: songs on the device with the same file name and the same artist.
-The folder, file extension and upper/lower case are ignored, so Album\Hello.mp3 and Hits\hello.flac by “The Band” match.
+What counts as a duplicate: songs on the device with the same song title and the same artist.
+Upper/lower case is ignored, and so are copy markers at the end of a title such as (1), [2], - Copy or Copy (3), so “Hello (1)” and “Hello - Copy” count as “Hello”.
+Versions such as “Hello (Live)” and years such as “Song (2021)” are kept apart.
 Songs without an artist tag are skipped, since there’s nothing to compare.
-Songs with the same name by different artists are left alone.
-When duplicates are found: a list opens with each group’s files and their album, bitrate, length and size.
-The best copy in each group (highest bitrate, then largest file) is left unticked, and the others are ticked for removal. You can change the ticks.
+Songs with the same title by different artists are left alone.
+When duplicates are found: a list opens with each copy’s file name and folder, file type, length, bitrate, size and album.
+The best copy in each group (highest bitrate, then a file name without a copy marker, then largest file) is left unticked, and the others are ticked for removal. You can change the ticks to keep a different version or file type.
+If the lengths in a group differ by more than a few seconds, a note warns that they may be different versions (live, remix, edit).
 If you tick every copy of a song, a warning says it will be gone from the device.
 The button shows the count, for example Remove 1 from device. Pressing Cancel changes nothing.
 When you confirm: the ticked files are deleted from the device and unticked in the list, so the next sync won’t copy them back. Your original files aren’t touched.
