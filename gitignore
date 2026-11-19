@@ -1,0 +1,10 @@
+# Created on each PC by start.bat; never commit these.
+.venv/
+__pycache__/
+*.pyc
+
+# Logs written next to the app
+musicsync.log
+musicsync.log.*
+musicsync.crash.log
+converter-install.log

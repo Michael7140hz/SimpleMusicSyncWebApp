@@ -1,0 +1,6 @@
+# Windows batch files must keep Windows (CRLF) line endings, or cmd can fail to find goto labels.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# Package files are binary.
+*.whl binary
+*.png binary
