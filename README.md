@@ -5,6 +5,22 @@ small Python server on your PC reads your music folder, streams songs to the
 page, and copies/removes songs on your external drive. It only listens on
 `127.0.0.1`, so nothing else on your network can reach it.
 
+## Screenshots
+
+![Song list with a device connected and a song playing](docs/screenshots/main-light.png)
+
+| Dark mode | Detect Duplicates |
+|---|---|
+| ![Dark mode](docs/screenshots/main-dark.png) | ![Duplicates dialog](docs/screenshots/duplicates-dark.png) |
+| **Right-click menu** | **Folder picker** |
+| ![Right-click menu on several highlighted songs](docs/screenshots/context-menu.png) | ![Folder picker](docs/screenshots/folder-picker.png) |
+
+Player with shuffle on and repeat set to forever:
+
+![Player controls](docs/screenshots/player-controls.png)
+
+The screenshots use a made-up demo library.
+
 ## Start it
 
 1. Install **Python 3.10 or newer** from https://www.python.org/downloads/
@@ -79,7 +95,7 @@ Versions such as “Hello (Live)” and years such as “Song (2021)” are kept
 Songs without an artist tag are skipped, since there’s nothing to compare.
 Songs with the same title by different artists are left alone.
 When duplicates are found: a list opens with each copy’s file name and folder, file type, length, bitrate, size and album.
-The best copy in each group (highest bitrate, then a file name without a copy marker, then largest file) is left unticked, and the others are ticked for removal. You can change the ticks to keep a different version or file type.
+The best copy in each group (lossless formats such as FLAC and WAV first, then highest bitrate, then a file name without a copy marker, then largest file) is left unticked, and the others are ticked for removal. You can change the ticks to keep a different version or file type.
 If the lengths in a group differ by more than a few seconds, a note warns that they may be different versions (live, remix, edit).
 If you tick every copy of a song, a warning says it will be gone from the device.
 The button shows the count, for example Remove 1 from device. Pressing Cancel changes nothing.
