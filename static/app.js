@@ -645,6 +645,8 @@ function cleanTitle(text) {
 const fileOf = (rel) => rel.split(/[\\/]/).pop();
 const folderOf = (rel) => { const p = rel.split(/[\\/]/); p.pop(); return p.join("\\") || "(top folder)"; };
 const typeOf = (rel) => { const m = rel.match(/\.([^.\\/]+)$/); return m ? m[1].toUpperCase() : "?"; };
+const LOSSLESS = new Set(["FLAC", "WAV", "AIF", "AIFF", "ALAC"]);
+const isLossless = (t) => LOSSLESS.has(typeOf(t.rel));
 const hasCopyMarker = (rel) => COPY_MARKER.test(fileOf(rel).replace(/\.[^.]+$/, ""));
 
 /** Groups songs on the device that share a song title (copy markers ignored) and artist. */
@@ -660,8 +662,8 @@ function findDuplicates() {
   }
   return [...groups.values()]
     .filter((g) => g.length > 1)
-    // Best copy first: highest bitrate, then a name without "(1)"/"copy", then biggest file.
-    .map((g) => g.sort((a, b) => (b.bitrate - a.bitrate)
+    // Best copy first: lossless, then highest bitrate, then a name without "(1)"/"copy", then biggest file.
+    .map((g) => g.sort((a, b) => (isLossless(b) - isLossless(a)) || (b.bitrate - a.bitrate)
       || (hasCopyMarker(a.rel) - hasCopyMarker(b.rel))
       || (b.size - a.size) || a.rel.localeCompare(b.rel)))
     .sort((a, b) => a[0].artist.localeCompare(b[0].artist) || a[0].title.localeCompare(b[0].title));
@@ -674,7 +676,7 @@ function chooseDuplicates(groups) {
   $("#dupesIntro").textContent =
     `Found ${groups.length.toLocaleString()} song(s) with more than one copy on the device (${total.toLocaleString()} files). ` +
     "Ticked files will be deleted from the device and unticked for syncing. " +
-    "The best copy of each song (highest bitrate) is left unticked; change the ticks to keep a different version.";
+    "The best copy of each song (lossless first, then highest bitrate) is left unticked; change the ticks to keep a different version.";
 
   const head = `<div class="dupe-cols dupe-colhead">
       <span>Remove</span><span>File name</span><span>Type</span><span class="num">Length</span>
@@ -693,7 +695,9 @@ function chooseDuplicates(groups) {
       </label>`).join("");
     const note = lengths.size > 1 && Math.max(...lengths) - Math.min(...lengths) > 5
       ? `<span class="dupe-note">Lengths differ; these may be different versions (live, remix, edit).</span>` : "";
-    return `<li class="dupe-group"><div class="dupe-head">${esc(g[0].artist)} – ${esc(g[0].title)}${note}</div>${head}${rows}</li>`;
+    const named = g.find((t) => !COPY_MARKER.test(t.title.trim())) || g[0];
+    const shownTitle = named.title.trim().replace(COPY_MARKER, "").trim() || named.title;
+    return `<li class="dupe-group"><div class="dupe-head">${esc(named.artist)} – ${esc(shownTitle)}${note}</div>${head}${rows}</li>`;
   }).join("");
 
   const picked = () => [...list.querySelectorAll("input:checked")].map((c) => +c.dataset.id);
