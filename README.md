@@ -15,6 +15,10 @@ page, and copies/removes songs on your external drive. It only listens on
 | **Right-click menu** | **Folder picker** |
 | ![Right-click menu on several highlighted songs](docs/screenshots/context-menu.png) | ![Folder picker](docs/screenshots/folder-picker.png) |
 
+A WMA file playing in the browser after being converted on the fly:
+
+![Player showing a WMA converted for playback](docs/screenshots/playback-conversion.png)
+
 Player with shuffle on and repeat set to forever:
 
 ![Player controls](docs/screenshots/player-controls.png)
