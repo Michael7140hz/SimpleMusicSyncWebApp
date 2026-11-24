@@ -59,7 +59,96 @@ const SERVER_DOWN_HELP =
   "Security software can also block or stop programs that delete files on USB drives. " +
   "If you use any, check whether it reported MusicSync or pythonw.exe.";
 
-function setStatus(text) { $("#statusText").textContent = text; }
+// =====================================================================
+// Status bar: progress while something runs, otherwise the latest activity.
+// Hover (or click) for recent history, which the server keeps.
+// =====================================================================
+const activityLog = [];          // newest last
+let activitySeq = 0, serverClockOffset = 0, transientUntil = 0;
+
+/** Short-lived progress text ("Reading tags… 120 of 4,000"). Not kept in the history. */
+function setStatus(text) {
+  transientUntil = Date.now() + (state && state.busy ? 1e9 : 8000);
+  $("#statusText").textContent = text;
+  $("#statusText").classList.add("transient");
+  $("#activityDot").className = "lvl" + (state && state.busy ? " busy" : "");
+  $("#activityWhen").textContent = "";
+}
+
+/** Records something worth keeping in the history (also written to musicsync.log). */
+function note(message, level = "info") {
+  api.send("/api/activity", { message, level }).then(pollActivity).catch(() => {
+    // Server unreachable: keep it locally so it still shows.
+    activityLog.push({ seq: 0, time: Date.now() / 1000, level, message });
+    renderActivity(true);
+  });
+}
+
+function timeAgo(sec) {
+  const s = Math.max(0, Date.now() / 1000 - serverClockOffset - sec);
+  if (s < 10) return "just now";
+  if (s < 60) return `${Math.floor(s)}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return new Date(sec * 1000).toLocaleDateString();
+}
+
+function renderActivity(fresh) {
+  const latest = activityLog[activityLog.length - 1];
+  if (latest && (fresh || Date.now() > transientUntil) && !state.busy) {
+    transientUntil = 0;
+    const text = $("#statusText");
+    text.textContent = latest.message;
+    text.classList.remove("transient");
+    $("#activityDot").className = `lvl ${latest.level}`;
+    $("#activityWhen").textContent = timeAgo(latest.time);
+    $("#activityBtn").title = latest.message;
+  }
+  if (!$("#activityPanel").hidden) renderActivityList();
+}
+
+function renderActivityList() {
+  const items = activityLog.slice(-30).reverse();
+  $("#activityList").innerHTML = items.length
+    ? items.map((a) => {
+        const d = new Date((a.time + serverClockOffset) * 1000);
+        return `<li><span class="lvl ${a.level}" title="${a.level}"></span>` +
+          `<time datetime="${d.toISOString()}" title="${d.toLocaleString()}">${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}</time>` +
+          `<span>${esc(a.message)}</span></li>`;
+      }).join("")
+    : `<li class="empty">Nothing yet.</li>`;
+}
+
+async function pollActivity() {
+  try {
+    const res = await api.get(`/api/activity?since=${activitySeq}`);
+    serverClockOffset = Date.now() / 1000 - res.now;   // so "2 min ago" is right even if clocks differ
+    if (res.latest < activitySeq) activityLog.length = 0;  // server restarted
+    const fresh = res.items.length > 0;
+    activityLog.push(...res.items);
+    if (activityLog.length > 200) activityLog.splice(0, activityLog.length - 200);
+    activitySeq = res.latest;
+    renderActivity(fresh);
+  } catch { /* server away: the next poll tries again */ }
+}
+setInterval(pollActivity, 3000);
+setInterval(() => renderActivity(false), 15000);   // keeps "2 min ago" current
+
+// Hover opens the history; click pins it open (also works with keyboard and touch).
+(() => {
+  const box = $("#activity"), btn = $("#activityBtn"), panel = $("#activityPanel");
+  let pinned = false, closeTimer = 0;
+  const show = (open) => {
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    if (open) renderActivityList();
+  };
+  box.addEventListener("mouseenter", () => { clearTimeout(closeTimer); show(true); });
+  box.addEventListener("mouseleave", () => { if (!pinned) closeTimer = setTimeout(() => show(false), 250); });
+  btn.addEventListener("click", () => { pinned = !pinned || panel.hidden; show(pinned); });
+  document.addEventListener("click", (e) => { if (!box.contains(e.target)) { pinned = false; show(false); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) { pinned = false; show(false); } });
+})();
 
 // =====================================================================
 // State
@@ -229,7 +318,8 @@ function setChecked(ids, value) {
   if (changed.length) {
     // Saved in the library index, so ticks survive restarts.
     api.send("/api/selection", { ids: changed, selected: value })
-      .catch((err) => setStatus("Couldn't save your ticks: " + err.message));
+      .catch((err) => note("Couldn't save your ticks: " + err.message, "error"));
+    scheduleAutoSync();
   }
 }
 
@@ -350,7 +440,7 @@ ctx.addEventListener("click", async (e) => {
   if (act === "check") setChecked(ids, true);
   if (act === "uncheck") setChecked(ids, false);
   if (act === "reveal" && state.focus != null) {
-    try { await api.send("/api/reveal", { id: state.focus }); } catch (err) { setStatus(err.message); }
+    try { await api.send("/api/reveal", { id: state.focus }); } catch (err) { note("Couldn't open the folder: " + err.message, "error"); }
   }
 });
 
@@ -432,6 +522,7 @@ async function watchJob(onEvent) {
     }
   } finally {
     setBusy(false);
+    pollActivity();
   }
 }
 
@@ -524,8 +615,8 @@ async function checkDeviceConnection() {
   if (!unplugged && !pluggedBackIn) return;
   try {
     applyDevice(await api.send("/api/device/refresh"));
-    if (unplugged) setStatus(`${state.savedDevice} was disconnected. Your ticks are kept for when it's back.`);
     refreshDrives();
+    if (pluggedBackIn && state.device) scheduleAutoSync(2000);   // apply ticks made while it was unplugged
   } catch { /* busy or server away: try again on the next check */ }
 }
 setInterval(checkDeviceConnection, 4000);
@@ -543,7 +634,6 @@ function applyDevice(res) {
   updateDeviceInfo();
   updateSummary();
   render();
-  if (state.device) setStatus(`${on.size.toLocaleString()} of your songs are already on ${state.device.folder}.`);
 }
 
 function clearDeviceUi() {
@@ -591,16 +681,67 @@ $("#syncBtn").addEventListener("click", async () => {
       { okLabel: "Sync", cancel: true });
     if (!ok) return;
   }
+  holdRemovals = false;
+  cancelAutoSync();
   await runSync(copy, remove);
 });
 
+// =====================================================================
+// Auto-sync: a moment after ticks change, copy the newly ticked songs and
+// remove the unticked ones, so the device always matches the Synced? column.
+// =====================================================================
+const AUTO_SYNC_DELAY = 1500;           // waits for you to stop clicking
+const AUTO_SYNC_ASK_OVER = 25;          // more removals than this at once: ask first
+let autoSyncTimer = 0, autoSyncPending = false, holdRemovals = false;
+
+function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
+  if (!$("#autoSync").checked || !state.device) return;
+  autoSyncPending = true;
+  clearTimeout(autoSyncTimer);
+  autoSyncTimer = setTimeout(runAutoSync, delay);
+}
+function cancelAutoSync() { autoSyncPending = false; clearTimeout(autoSyncTimer); }
+
+async function runAutoSync() {
+  if (!autoSyncPending || !$("#autoSync").checked || !state.device) return;
+  if (state.busy) { autoSyncTimer = setTimeout(runAutoSync, 1000); return; }   // after the current task
+  autoSyncPending = false;
+  const copy = state.tracks.filter((t) => statusOf(t) === "copy").map((t) => t.id);
+  let remove = state.tracks.filter((t) => statusOf(t) === "remove").map((t) => t.id);
+  if (remove.length <= AUTO_SYNC_ASK_OVER) holdRemovals = false;
+  if (remove.length > AUTO_SYNC_ASK_OVER && !holdRemovals) {
+    const ok = await message("Remove songs from the device?",
+      `Auto-sync is about to delete ${remove.length.toLocaleString()} unticked songs from\n${state.device.folder}\n\n` +
+      "Your original files are not touched.", { okLabel: "Remove them", cancel: true });
+    if (!ok) {
+      holdRemovals = true;
+      note(`Auto-sync is holding back ${remove.length.toLocaleString()} removals. ` +
+        "Press Sync to device when you want them removed.", "warning");
+    }
+  }
+  if (holdRemovals) remove = [];
+  if (!copy.length && !remove.length) return;
+  await runSync(copy, remove, { auto: true });
+}
+
+$("#autoSync").checked = loadPref("musicsync.autosync", "on") === "on";
+$("#autoSync").addEventListener("change", () => {
+  savePref("musicsync.autosync", $("#autoSync").checked ? "on" : "off");
+  note(`Auto-sync turned ${$("#autoSync").checked ? "on" : "off"}.`);
+  if ($("#autoSync").checked) scheduleAutoSync(300); else cancelAutoSync();
+});
+
 /** Sends a sync to the server and follows it to the end. Used by Sync and by Detect Duplicates. */
-async function runSync(copy, remove) {
+async function runSync(copy, remove, { auto = false } = {}) {
   const requestedAt = Date.now() / 1000 - 2;
   try {
     await api.send("/api/sync", { copy, remove });
   } catch (err) {
-    if (!err.connectionLost) { message("Can't sync", err.message); return; }
+    if (!err.connectionLost) {
+      // Auto-sync reports problems in the activity feed instead of interrupting you.
+      if (auto) note(`Auto-sync couldn't run: ${err.message}`, "error"); else message("Can't sync", err.message);
+      return;
+    }
     // The reply got lost. Find out whether the server is up and the sync started anyway.
     setStatus("Lost touch with the server, checking…");
     if (!(await serverAlive())) { message("Can't sync", SERVER_DOWN_HELP); return; }
@@ -625,11 +766,11 @@ async function runSync(copy, remove) {
   }
   try { state.device = (await api.get("/api/state")).device; } catch { /* ignore */ }
   updateDeviceInfo(); updateSummary(); render(); refreshDrives();
-  if (job && job.errors.length) {
+  if (job && job.errors.length && !auto) {   // auto: already reported in the activity feed
     const list = job.errors.slice(0, 15).join("\n") + (job.errors.length > 15 ? `\n…and ${job.errors.length - 15} more.` : "");
     message("Some files couldn't be synced", list);
   } else if (job && job.cancelled) {
-    setStatus("Sync cancelled. Songs already copied stay on the device.");
+    pollActivity();
   }
   return job;
 }
@@ -734,6 +875,7 @@ $("#dupesBtn").addEventListener("click", async () => {
   const ids = await chooseDuplicates(groups);
   if (!ids || !ids.length) return;
   setChecked(ids, false);            // so the next sync doesn't copy them back
+  cancelAutoSync();
   await runSync([], ids);
 });
 
@@ -927,7 +1069,7 @@ async function explainPlayError(track, mediaError) {
   if (detail) reason += ` (Browser: ${detail})`;
   state.playErrors.set(track.id, reason);
   render();
-  setStatus(`Couldn't play “${track.title}”: ${reason}`);
+  note(`Couldn't play “${track.title}”: ${reason}`, "error");
 }
 // ---------- Converting formats the browser can't play ----------
 const MIME_BY_EXT = {
@@ -955,7 +1097,7 @@ player.resolve = async (t) => {
   try { res = await convertTrack(t); }
   catch (err) { throw new Error(`Couldn't convert it for playback: ${err.message}`); }
   state.playingConverted = { id: t.id, from: extOf(t).toUpperCase(), to: res.format };
-  setStatus(`Playing “${t.title}” converted from ${extOf(t).toUpperCase()} to ${res.format}.`);
+  renderActivity(true);
   return `/api/converted/${t.id}`;
 };
 
@@ -963,7 +1105,7 @@ player.onerror = async (track, mediaError, convertReason) => {
   if (convertReason) {
     state.playErrors.set(track.id, convertReason);
     render();
-    setStatus(`Couldn't play “${track.title}”: ${convertReason}`);
+    note(`Couldn't play “${track.title}”: ${convertReason}`, "error");
     return "skip";
   }
   // The browser couldn't play the original. If the file itself is fine, try a converted copy once.
@@ -1184,6 +1326,7 @@ function pickFolder(title, start, { mustExist }) {
   renderHead();
   applyView();
   try {
+    pollActivity();
     const s = await api.get("/api/state");
     state.canConvert = !!s.canConvert;
     $("#recursive").checked = s.recursive;
@@ -1200,7 +1343,7 @@ function pickFolder(title, start, { mustExist }) {
     if (state.device || state.savedDevice) {
       applyDevice(await api.send("/api/device/refresh"));
       await refreshDrives();
-      if (!state.device) setStatus(`${state.savedDevice} isn't connected. Plug the drive in and it reconnects automatically.`);
+      if (state.device) scheduleAutoSync(2500);
     }
   } catch (err) {
     setStatus("Can't reach the MusicSync server. Run start.bat to start it again.");

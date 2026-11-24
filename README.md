@@ -9,11 +9,17 @@ page, and copies/removes songs on your external drive. It only listens on
 
 ![Song list with a device connected and a song playing](docs/screenshots/main-light.png)
 
+Theater mode, a full-window player over a wall of album art:
+
+![Theater mode](docs/screenshots/theater.png)
+
 | Dark mode | Detect Duplicates |
 |---|---|
 | ![Dark mode](docs/screenshots/main-dark.png) | ![Duplicates dialog](docs/screenshots/duplicates-dark.png) |
 | **Right-click menu** | **Folder picker** |
 | ![Right-click menu on several highlighted songs](docs/screenshots/context-menu.png) | ![Folder picker](docs/screenshots/folder-picker.png) |
+| **Theater mode with song details** | **Recent activity (hover the status bar)** |
+| ![Theater mode with the details panel open](docs/screenshots/theater-details.png) | ![Recent activity panel](docs/screenshots/activity.png) |
 
 A WMA file playing in the browser after being converted on the fly:
 
@@ -23,7 +29,7 @@ Player with shuffle on and repeat set to forever:
 
 ![Player controls](docs/screenshots/player-controls.png)
 
-The screenshots use a made-up demo library.
+The screenshots use a made-up demo library with generated cover art.
 
 ## Start it
 
@@ -78,7 +84,43 @@ the browser.
 - **Ticking songs:** use the *Synced?* checkboxes, or highlight rows
   (Shift/Ctrl-click, Ctrl+A) and press Space. Right-click for more options.
   The *Device status* column shows **To copy**, **On device** or **To remove**.
-  Nothing on the drive changes until you press **Sync to device**.
+- **Auto-sync** (on by default, next to Sync to device): a moment after you
+  stop ticking or unticking, newly ticked songs are copied and unticked ones
+  removed from the device. It also applies changes you made while the drive
+  was unplugged, as soon as it's back. If one change would remove more than 25
+  songs, it asks first; say no and it holds those removals until you press
+  Sync to device. Choosing a different device doesn't start a sync by itself.
+  Turn Auto-sync off to review changes and press **Sync to device** yourself.
+- **Status bar:** shows progress while something runs, otherwise the latest
+  activity and how long ago it happened. Hover over it (or click it) for the
+  recent history: scans, syncs, files that couldn't be copied, devices
+  plugged in or out, conversions and songs that wouldn't play. The full log is
+  under tray icon > Show log file.
+
+## Theater mode
+
+A full-window player, for when the music is the point. Open it with the
+**Theater** button in the player bar, **Play in Theater Mode** on the
+right-click menu, or the **T** key.
+
+- The background is a wall of your album covers in mixed tile sizes, turned
+  monochrome and tinted with a colour taken from the playing song's cover. It
+  drifts slowly, tiles change every few seconds, and the playing album moves
+  onto a big tile when the song changes. Albums without art get lettered tiles.
+- Bottom left: the cover, artist, album and title, with buttons for **song
+  details** (format, bitrate, file, device status), **keep on device** (same as
+  the *Synced?* tick, so Auto-sync follows) and **show in library**.
+- Right: **up next**, with the playing song highlighted. Click a song to jump
+  to it; the list button at the bottom right hides or shows it.
+- Bottom: progress (click to seek), repeat, shuffle, previous/play/next, full
+  screen, and volume.
+- Keys: Space play/pause, ← → previous/next, F full screen, Esc back to the
+  library.
+
+Album art comes from the songs' tags (MP3, M4A, FLAC, OGG, WMA, APE/WavPack),
+or a cover image in the album folder (`cover.jpg`, `folder.jpg`, `front.png`
+and so on). Resized copies are cached, so each album is only read once. The
+cover also shows in the player bar and in Windows' media overlay.
 
 A song counts as on the device when a file with the same path (relative to your
 music folder) and the same size is in the device folder. Only files in the
@@ -210,5 +252,8 @@ Then copy the whole folder to the offline PC and run `start.bat`. Delete the
   volume and light/dark choice are remembered by the browser.
 - Files MusicSync keeps: settings and the library index in
   `%AppData%\MusicSync\`, converted copies for playback in
-  `%LocalAppData%\MusicSync\converted\`, and `musicsync.log` in the app folder
-  (tray icon > Show log file).
+  `%LocalAppData%\MusicSync\converted\`, album art in
+  `%LocalAppData%\MusicSync\art\` (safe to delete; it's rebuilt as needed),
+  and `musicsync.log` in the app folder (tray icon > Show log file).
+- Auto-sync, Theater mode's up-next panel and the light/dark choice are
+  remembered by the browser.

@@ -8,7 +8,11 @@ Only your own computer can reach it.
 By default it lives in the system tray (no window). Run with --console to get
 a console window instead.
 """
+import base64
+import collections
 import faulthandler
+import hashlib
+import io
 import json
 import logging
 import logging.handlers
@@ -72,6 +76,25 @@ if sys.stderr is not None and getattr(sys.stderr, "name", "") != os.devnull:
     log.addHandler(logging.StreamHandler())
 # Only show errors from the web server in the console, not every request.
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+
+# ---------------------------------------------------------------------------
+# Activity feed: short, plain-language entries shown in the page's status bar
+# (hover for history). Also written to musicsync.log.
+# ---------------------------------------------------------------------------
+_activity = collections.deque(maxlen=200)
+_activity_lock = threading.Lock()
+_activity_seq = 0
+
+
+def activity(message: str, level: str = "info") -> None:
+    """level: "info", "success", "warning" or "error"."""
+    global _activity_seq
+    message = " ".join(str(message).split())[:400]
+    with _activity_lock:
+        _activity_seq += 1
+        _activity.append({"seq": _activity_seq, "time": time.time(), "level": level, "message": message})
+    {"warning": log.warning, "error": log.error}.get(level, log.info)("Activity: %s", message)
 
 
 def disable_quick_edit() -> None:
@@ -417,10 +440,11 @@ def converted_file(t: dict) -> Path:
             _try_remove(str(tmp))
             detail = (r.stderr or "").strip().splitlines()[-1:] or ["unknown error"]
             log.warning("Conversion failed for %s: %s", src, r.stderr.strip()[-500:])
+            activity(f"Couldn't convert “{t['title']}” for playback; the file may be damaged.", "error")
             raise ConvertError(f"FFmpeg couldn't convert it ({detail[0][:160]}). The file may be damaged.")
         os.replace(tmp, out)
-        log.info("Converted %s (%s) to %s in %.1fs", t["rel"], codec, out.suffix[1:].upper(),
-                 time.monotonic() - started)
+        activity(f"Converted “{t['title']}” from {os.path.splitext(src)[1][1:].upper()} to "
+                 f"{out.suffix[1:].upper()} for playback ({time.monotonic() - started:.1f}s).")
     _trim_convert_cache()
     return out
 
@@ -451,6 +475,152 @@ def _trim_convert_cache() -> None:
 
 def public_track(t: dict) -> dict:
     return {k: v for k, v in t.items() if k != "path"}
+
+
+# ---------------------------------------------------------------------------
+# Album art (for Theater mode and the player): taken from the song's tags, or
+# from a cover/folder image next to it. Resized copies are cached per album in
+# %LocalAppData%\MusicSync\art so each album is only read once.
+# ---------------------------------------------------------------------------
+
+ART_SIZES = {"small": 300, "large": 800}
+ART_DIR = CONVERT_DIR.parent / "art"
+ART_NAMES = ("cover", "folder", "front", "album", "albumart", "albumartlarge")
+ART_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
+_art_locks: dict[str, threading.Lock] = {}
+_art_locks_guard = threading.Lock()
+
+try:
+    from PIL import Image as _PILImage
+except Exception:          # Pillow missing: art is served unresized
+    _PILImage = None
+
+
+def album_key(t: dict) -> str:
+    folder = os.path.normcase(os.path.dirname(t["path"]))
+    return hashlib.sha1(f"{folder}|{(t.get('album') or '').strip().lower()}".encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def _asf_picture(raw: bytes):
+    """WM/Picture: type, size, mime and description (UTF-16, zero-terminated), then the image."""
+    try:
+        size = int.from_bytes(raw[1:5], "little")
+        pos = 5
+        for _ in range(2):                         # skip mime type and description
+            end = pos
+            while raw[end:end + 2] != b"\0\0":
+                end += 2
+            pos = end + 2
+        return raw[pos:pos + size] or None
+    except Exception:
+        return None
+
+
+def embedded_art(path: str):
+    """Image bytes stored in the file's tags, or None."""
+    try:
+        f = mutagen.File(path)
+    except Exception:
+        return None
+    if f is None:
+        return None
+    pics = getattr(f, "pictures", None)            # FLAC
+    if pics:
+        front = [p for p in pics if p.type == 3]
+        return (front or pics)[0].data
+    tags = f.tags
+    if not tags:
+        return None
+    try:
+        if hasattr(tags, "getall"):                # ID3: MP3, WAV, AIFF
+            apic = tags.getall("APIC")
+            if apic:
+                front = [a for a in apic if a.type == 3]
+                return (front or apic)[0].data
+        if "covr" in tags:                         # MP4 / M4A
+            return bytes(tags["covr"][0])
+        if "metadata_block_picture" in tags:       # OGG / Opus
+            from mutagen.flac import Picture
+            return Picture(base64.b64decode(tags["metadata_block_picture"][0])).data
+        if "WM/Picture" in tags:                   # WMA
+            return _asf_picture(bytes(tags["WM/Picture"][0].value))
+        for key in ("Cover Art (Front)", "Cover Art (Other)"):   # APE, WavPack, Musepack
+            if key in tags:
+                raw = bytes(tags[key].value)
+                return raw.split(b"\0", 1)[1] if b"\0" in raw[:256] else raw
+    except Exception:
+        return None
+    return None
+
+
+def folder_art(folder: str):
+    """A cover image file in the song's folder, or None."""
+    try:
+        names = [n for n in os.listdir(folder) if os.path.splitext(n)[1].lower() in ART_EXTS]
+    except OSError:
+        return None
+    def rank(name):
+        stem = os.path.splitext(name)[0].lower().replace(" ", "").replace("_", "")
+        if "small" in stem:
+            return 90
+        for i, wanted in enumerate(ART_NAMES):
+            if stem == wanted or stem.startswith(wanted):
+                return i
+        return 50 if "cover" in stem or "front" in stem else 99
+    names = sorted((n for n in names if rank(n) < 99), key=rank)
+    return os.path.join(folder, names[0]) if names else None
+
+
+def album_art(t: dict, size: str) -> Path | None:
+    """Path to a cached JPEG of the song's album art at the given size, or None."""
+    key = album_key(t)
+    ART_DIR.mkdir(parents=True, exist_ok=True)
+    out = ART_DIR / f"{key}-{size}.jpg"
+    none = ART_DIR / f"{key}.none"
+    if out.is_file():
+        return out
+    if none.is_file() and time.time() - none.stat().st_mtime < 86400:   # re-check missing art daily
+        return None
+    with _art_locks_guard:
+        lock = _art_locks.setdefault(key, threading.Lock())
+    with lock:
+        if out.is_file():
+            return out
+        # The song itself, then a few others from the same album, then a cover image file.
+        with S.lock:
+            same = [o for o in S.tracks if o is not t and album_key(o) == key][:4]
+        data = None
+        for cand in [t, *same]:
+            data = embedded_art(cand["path"])
+            if data:
+                break
+        if not data:
+            img_file = folder_art(os.path.dirname(t["path"]))
+            if img_file:
+                try:
+                    with open(img_file, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    data = None
+        if not data:
+            none.touch()
+            return None
+        try:
+            if _PILImage is None:
+                out.write_bytes(data)
+            else:
+                with _PILImage.open(io.BytesIO(data)) as im:
+                    im = im.convert("RGB")
+                    for name, px in ART_SIZES.items():
+                        copy = im.copy()
+                        copy.thumbnail((px, px), _PILImage.LANCZOS)
+                        copy.save(ART_DIR / f"{key}-{name}.jpg", "JPEG", quality=86, optimize=True)
+        except Exception as e:
+            log.warning("Couldn't read album art for %s: %s", t["rel"], e)
+            none.touch()
+            return None
+        _try_remove(str(none))
+    return out if out.is_file() else None
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +734,8 @@ class State:
                 target(job, *args)
             except Cancelled:
                 job.cancelled = True
-                job.message = "Cancelled."
+                job.message = ("Sync cancelled. Songs already copied stay on the device."
+                               if kind == "sync" else "Library scan cancelled.")
             except Exception as e:  # report instead of dying silently
                 log.error("%s job failed:\n%s", kind, traceback.format_exc())
                 job.errors.append(str(e))
@@ -572,6 +743,17 @@ class State:
             finally:
                 job.running = False
                 log.info("%s job finished: %s (%d problem(s))", kind, job.message, len(job.errors))
+                label = "Library scan" if kind == "scan" else "Sync"
+                if job.cancelled:
+                    activity(job.message, "warning")
+                elif job.errors and job.message.startswith("Stopped"):
+                    activity(f"{label} stopped: {job.errors[-1]}", "error")
+                elif job.errors:
+                    activity(f"{job.message} {len(job.errors)} file(s) had problems; "
+                             f"first: {job.errors[0]}", "warning")
+                else:
+                    activity(job.message if kind == "sync" else f"Library scanned: {job.message}",
+                             "success" if kind == "sync" else "info")
 
         threading.Thread(target=run, daemon=True).start()
         return job
@@ -757,7 +939,9 @@ def run_sync(job: Job, device: Device, to_copy: list, to_remove: list) -> None:
             log.warning("Copy failed for %s: %r", dest, e)
         job.done += 1
 
-    job.message = f"Sync complete: {len(to_copy):,} copied, {len(to_remove):,} removed."
+    copied = len(to_copy) - sum(1 for e in job.errors if e.startswith("Copy "))
+    removed = len(to_remove) - sum(1 for e in job.errors if e.startswith("Remove "))
+    job.message = f"Synced to {device.folder}: {copied:,} copied, {removed:,} removed."
 
 
 def _try_remove(p: str) -> None:
@@ -832,6 +1016,26 @@ def unexpected_error(e):
         return e
     log.error("Error handling %s %s:\n%s", request.method, request.path, traceback.format_exc())
     return jsonify({"error": f"Unexpected error: {e}. Details are in musicsync.log."}), 500
+
+
+@app.get("/api/activity")
+def get_activity():
+    since = request.args.get("since", default=0, type=int)
+    with _activity_lock:
+        items = [a for a in _activity if a["seq"] > since]
+        latest = _activity_seq
+    return jsonify({"items": items, "latest": latest, "now": time.time()})
+
+
+@app.post("/api/activity")
+def post_activity():
+    """Lets the page record things only it knows about, such as a song that wouldn't play."""
+    body = request.get_json(silent=True) or {}
+    level = body.get("level") if body.get("level") in ("info", "success", "warning", "error") else "info"
+    message = str(body.get("message", "")).strip()
+    if message:
+        activity(message, level)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/ping")
@@ -929,6 +1133,8 @@ def set_device():
         INDEX.set_selected(changes)
         resolve_undecided()
         S.save()
+        on = sum(1 for t in S.tracks if t["onDevice"])
+        activity(f"Device set to {dev.folder}. {on:,} of your songs are already on it.")
     return _device_response()
 
 
@@ -941,11 +1147,11 @@ def refresh_device():
             return error("Wait for the current task to finish.", 409)
         lib = S.library or S.settings.get("library")
         if S.device and not device_available(S.device.folder):
-            log.info("Device disconnected: %s", S.device.folder)
+            activity(f"{S.device.folder} was disconnected. Your ticks are kept for when it's back.", "warning")
             S.device = None
         elif (not S.device and S.saved_device and device_available(S.saved_device)
               and not (lib and paths_overlap(S.saved_device, lib))):
-            log.info("Device reconnected: %s", S.saved_device)
+            activity(f"{S.saved_device} reconnected.", "success")
             S.device = Device(S.saved_device)
         if S.device:
             S.device.scan()
@@ -1066,6 +1272,23 @@ def convert(track_id: int):
     return jsonify({"ok": True, "format": out.suffix[1:].upper()})
 
 
+@app.get("/api/art/<int:track_id>")
+def art(track_id: int):
+    size = request.args.get("size", "small")
+    if size not in ART_SIZES:
+        size = "small"
+    with S.lock:
+        t = S.by_id.get(track_id)
+    if not t:
+        abort(404)
+    path = album_art(t, size)
+    if not path:
+        abort(404)
+    resp = send_file(path, mimetype="image/jpeg" if _PILImage else None, conditional=True)
+    resp.headers["Cache-Control"] = "private, max-age=3600"
+    return resp
+
+
 @app.get("/api/converted/<int:track_id>")
 def converted_audio(track_id: int):
     with S.lock:
@@ -1164,10 +1387,16 @@ def browse():
 # ---------------------------------------------------------------------------
 
 def restore_last_session():
+    activity("MusicSync started.")
+    if not FFMPEG:
+        activity("FFmpeg wasn't found, so WMA, AIFF and similar formats won't play. "
+                 "See musicsync.log for why.", "warning")
     lib = S.settings.get("library")
     dev = S.saved_device
     if dev and device_available(dev):
         S.device = Device(dev)
+    elif dev:
+        activity(f"{dev} isn't connected. Plug the drive in and it reconnects automatically.", "warning")
     if lib and os.path.isdir(lib):
         S.start_job("scan", scan_library, lib, S.recursive)
 

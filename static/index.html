@@ -37,6 +37,9 @@
     <div class="device-actions">
       <span id="syncSummary" class="summary"></span>
       <button id="dupesBtn" disabled title="Find songs on the device with the same title and artist">Detect Duplicates</button>
+      <label class="check autosync" title="Copy songs when you tick them and remove them from the device when you untick them, a moment after you stop clicking">
+        <input type="checkbox" id="autoSync" checked> Auto-sync
+      </label>
       <button id="syncBtn" class="primary" disabled title="Copy checked songs to the device and delete unchecked ones from it">Sync to device</button>
     </div>
   </section>
@@ -58,8 +61,11 @@
       <button class="icon" id="nextBtn" title="Next" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
     </div>
     <div class="now">
-      <div class="now-title" id="nowTitle">Not playing</div>
-      <div class="now-sub" id="nowSub">Double-click a song to play it</div>
+      <img class="now-art" id="nowArt" alt="" hidden>
+      <div class="now-text">
+        <div class="now-title" id="nowTitle">Not playing</div>
+        <div class="now-sub" id="nowSub">Double-click a song to play it</div>
+      </div>
     </div>
     <div class="modes" role="group" aria-label="Play mode">
       <button class="icon toggle" id="shuffleBtn" aria-pressed="false">
@@ -75,6 +81,10 @@
       <span class="mode-text" id="modeText"></span>
     </div>
     <div class="volume">
+      <button id="theaterBtn" class="theater-btn" title="Theater mode: full-window player with album art (T)">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="4" rx="1"/><rect x="13" y="10" width="8" height="10" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/></svg>
+        Theater
+      </button>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 8.5a5 5 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       <input type="range" id="volume" min="0" max="1" step="0.01" value="0.7" aria-label="Volume">
     </div>
@@ -86,7 +96,18 @@
   </section>
 
   <footer class="status">
-    <span id="statusText">Starting…</span>
+    <div class="activity" id="activity">
+      <button type="button" class="activity-now" id="activityBtn" aria-expanded="false" aria-controls="activityPanel">
+        <span class="lvl" id="activityDot" aria-hidden="true"></span>
+        <span class="activity-text" id="statusText">Starting…</span>
+        <span class="activity-when" id="activityWhen"></span>
+      </button>
+      <div class="activity-panel" id="activityPanel" role="region" aria-label="Recent activity" hidden>
+        <div class="activity-head">Recent activity</div>
+        <ol class="activity-list" id="activityList"></ol>
+        <div class="activity-foot">Full details: tray icon &gt; Show log file</div>
+      </div>
+    </div>
     <div class="busy" id="busy" hidden>
       <progress id="progress" max="1" value="0"></progress>
       <button id="cancelBtn">Cancel</button>
@@ -94,10 +115,80 @@
   </footer>
 </div>
 
+
+<section id="theater" class="theater" hidden aria-label="Theater mode" tabindex="-1">
+  <div class="th-wall" aria-hidden="true"><div class="th-pan" id="thPan"></div></div>
+  <div class="th-tint" aria-hidden="true"></div>
+  <div class="th-shade" aria-hidden="true"></div>
+
+  <button class="th-back" id="thBack" title="Back to library (Esc)" aria-label="Back to library">
+    <svg viewBox="0 0 24 24"><path d="M19 12H5M11 5l-7 7 7 7"/></svg>
+  </button>
+
+  <div class="th-now">
+    <div class="th-cover"><img id="thArt" alt=""><span class="th-cover-blank" id="thArtBlank" aria-hidden="true"></span></div>
+    <div class="th-meta">
+      <div class="th-artist" id="thArtist"></div>
+      <div class="th-album" id="thAlbum"></div>
+      <div class="th-title" id="thTitle"></div>
+      <div class="th-actions">
+        <button class="th-round" id="thInfo" aria-pressed="false" title="Song details" aria-label="Song details">
+          <svg viewBox="0 0 24 24"><path d="M12 11v6M12 7.5v.5"/></svg>
+        </button>
+        <button class="th-round" id="thSynced" aria-pressed="false" title="Keep on device" aria-label="Keep on device">
+          <svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/></svg>
+        </button>
+        <button class="th-round" id="thLocate" title="Show in library" aria-label="Show in library">
+          <svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9"/></svg>
+        </button>
+      </div>
+      <dl class="th-details" id="thDetails" hidden></dl>
+    </div>
+  </div>
+
+  <aside class="th-queue" id="thQueue" aria-label="Up next">
+    <ol class="th-queue-list" id="thQueueList"></ol>
+  </aside>
+
+  <div class="th-progress">
+    <div class="th-ptitle" id="thPTitle"></div>
+    <input type="range" id="thSeek" min="0" max="0" step="0.1" value="0" aria-label="Position">
+    <div class="th-times"><span id="thElapsed">0:00</span><span id="thRemain">-0:00</span></div>
+  </div>
+
+  <div class="th-controls">
+    <div class="th-buttons">
+      <button class="th-ctl" id="thQueueBtn" aria-pressed="true" title="Show up next" aria-label="Show up next">
+        <svg viewBox="0 0 24 24"><path d="M4 6h11M4 11h11M4 16h7M17 13v7M14.5 17.5 17 20l2.5-2.5"/></svg>
+      </button>
+      <button class="th-ctl" id="thRepeat" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M4 11V9a3 3 0 0 1 3-3h12M16 3l3 3-3 3M20 13v2a3 3 0 0 1-3 3H5M8 21l-3-3 3-3"/></svg>
+        <span class="th-badge" id="thRepeatBadge" hidden></span>
+      </button>
+      <button class="th-ctl" id="thShuffle" aria-pressed="false">
+        <svg viewBox="0 0 24 24"><path d="M3 7h3.5c2 0 3.2 1 4.3 2.7l2.4 4.6C14.3 16 15.5 17 17.5 17H21M3 17h3.5c1.4 0 2.4-.5 3.3-1.4M14.2 8.4C15.1 7.5 16.1 7 17.5 7H21M18 4l3 3-3 3M18 14l3 3-3 3"/></svg>
+      </button>
+      <button class="th-ring" id="thPrev" title="Previous" aria-label="Previous"><svg viewBox="0 0 24 24"><path class="fill" d="M6 6h2v12H6zM19 6v12l-9-6z"/></svg></button>
+      <button class="th-ring th-play" id="thPlay" title="Play / pause (Space)" aria-label="Play"><svg viewBox="0 0 24 24" id="thPlayIcon"></svg></button>
+      <button class="th-ring" id="thNext" title="Next" aria-label="Next"><svg viewBox="0 0 24 24"><path class="fill" d="M16 6h2v12h-2zM5 6v12l9-6z"/></svg></button>
+      <button class="th-ctl" id="thFull" title="Full screen (F)" aria-label="Full screen">
+        <svg viewBox="0 0 24 24" id="thFullIcon"></svg>
+      </button>
+      <button class="th-ctl" id="thClose" title="Back to library (Esc)" aria-label="Back to library">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </div>
+    <label class="th-volume">Volume <span id="thVolText">70</span>
+      <input type="range" id="thVol" min="0" max="1" step="0.01" aria-label="Volume">
+    </label>
+  </div>
+</section>
+
 <audio id="audio" preload="auto"></audio>
 
 <div class="ctx" id="ctx" hidden role="menu">
   <button data-act="play" role="menuitem">Play</button>
+  <button data-act="theater" role="menuitem">Play in Theater Mode</button>
   <hr>
   <button data-act="check" role="menuitem">Check for device <kbd>Space</kbd></button>
   <button data-act="uncheck" role="menuitem">Uncheck for device</button>
@@ -148,5 +239,6 @@
 </dialog>
 
 <script src="/static/app.js"></script>
+<script src="/static/theater.js"></script>
 </body>
 </html>
