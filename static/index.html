@@ -73,10 +73,11 @@
         <div class="now-sub" id="nowSub">Double-click a song to play it</div>
       </div>
     </div>
+    <canvas class="viz" id="viz" aria-hidden="true"></canvas>
     <div class="volume">
       <button id="theaterBtn" class="theater-btn" title="Theater mode: full-window player with album art (T)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="4" rx="1"/><rect x="13" y="10" width="8" height="10" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/></svg>
-        Theater
+        Theater Mode
       </button>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 8.5a5 5 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       <input type="range" id="volume" min="0" max="1" step="0.01" value="0.7" aria-label="Volume">
@@ -90,10 +91,11 @@
 
   <footer class="status">
     <div class="activity" id="activity">
-      <button type="button" class="activity-now" id="activityBtn" aria-expanded="false" aria-controls="activityPanel">
+      <button type="button" class="activity-now" id="activityBtn" aria-expanded="false" aria-controls="activityPanel" aria-label="Show recent activity" title="Recent activity">
         <span class="lvl" id="activityDot" aria-hidden="true"></span>
         <span class="activity-text" id="statusText">Starting…</span>
         <span class="activity-when" id="activityWhen"></span>
+        <svg class="activity-caret" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5 7.5 5 3 8.5z"/></svg>
       </button>
       <div class="activity-panel" id="activityPanel" role="region" aria-label="Recent activity" hidden>
         <div class="activity-head">Recent activity</div>
@@ -231,6 +233,7 @@
 </dialog>
 
 <script src="/static/app.js"></script>
+<script src="/static/visualizer.js"></script>
 <script src="/static/theater.js"></script>
 </body>
 </html>

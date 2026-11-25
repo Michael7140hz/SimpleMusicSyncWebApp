@@ -255,7 +255,7 @@
     ui.title.textContent = t.title;
     ui.ptitle.textContent = t.title;
     ui.synced.setAttribute("aria-pressed", String(!!t.selected));
-    ui.synced.title = t.selected ? "On your device list (click to untick)" : "Keep on device (ticks Synced?)";
+    ui.synced.title = t.selected ? "On your device list (click to untick)" : "Keep on device (ticks Sync)";
     if (shownTrackId !== t.id) {
       shownTrackId = t.id;
       ui.cover.classList.remove("blank");
@@ -379,7 +379,7 @@
   ui.synced.addEventListener("click", () => {
     const t = player.current;
     if (!t) return;
-    setChecked([t.id], !t.selected);          // same as ticking Synced? (auto-sync follows)
+    setChecked([t.id], !t.selected);          // same as ticking Sync (auto-sync follows)
     updateAll();
   });
   ui.locate.addEventListener("click", () => {

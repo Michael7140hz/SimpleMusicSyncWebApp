@@ -18,7 +18,7 @@ Theater mode, a full-window player over a wall of album art:
 | ![Dark mode](docs/screenshots/main-dark.png) | ![Duplicates dialog](docs/screenshots/duplicates-dark.png) |
 | **Right-click menu** | **Folder picker** |
 | ![Right-click menu on several highlighted songs](docs/screenshots/context-menu.png) | ![Folder picker](docs/screenshots/folder-picker.png) |
-| **Theater mode with song details** | **Recent activity (hover the status bar)** |
+| **Theater mode with song details** | **Recent activity (click the status bar)** |
 | ![Theater mode with the details panel open](docs/screenshots/theater-details.png) | ![Recent activity panel](docs/screenshots/activity.png) |
 
 A WMA file playing in the browser after being converted on the fly:
@@ -75,6 +75,12 @@ the browser.
 
   Formats the browser can't play are converted automatically (see "Playing
   every format").
+- **Visualizer:** while a song plays, a spectrum visualizer fills the space
+  in the player bar, in the same orange-to-magenta gradient (low notes on the
+  left, high on the right). It starts after your first click or key press on
+  the page, because browsers only allow audio analysis after you've
+  interacted. It's hidden in narrow windows and when Windows' "reduce
+  motion" setting (Animation effects off) is on.
 - **Where you left off:** the playing song, position, queue, shuffle and
   repeat are saved every few seconds (and on pause, seek, song change and
   closing the page). Next time you open MusicSync, even after a crash or
@@ -88,21 +94,24 @@ the browser.
   The folder is remembered: if the drive isn't plugged in, the app says so and
   reconnects by itself within a few seconds of you plugging it in (or press
   the refresh button). Your ticks are kept while it's unplugged.
-- **Ticking songs:** use the *Synced?* checkboxes, or highlight rows
+- **Ticking songs:** use the *Sync* checkboxes, or highlight rows
   (Shift/Ctrl-click, Ctrl+A) and press Space. Right-click for more options.
-  The *Device status* column shows **To copy**, **On device** or **To remove**.
-- **Auto-sync** (on by default, next to Sync to device): a moment after you
+  The *Status* column shows **To copy**, **On device** or **To remove**.
+- **Auto-sync** (on by default, next to Sync to device): 5 seconds after you
   stop ticking or unticking, newly ticked songs are copied and unticked ones
-  removed from the device. It also applies changes you made while the drive
+  removed from the device. The wait lets you change your mind: a song ticked
+  by mistake and unticked within those 5 seconds is never copied (and the
+  other way round), and the status bar shows the countdown. It also applies changes you made while the drive
   was unplugged, as soon as it's back. If one change would remove more than 25
   songs, it asks first; say no and it holds those removals until you press
   Sync to device. Choosing a different device doesn't start a sync by itself.
   Turn Auto-sync off to review changes and press **Sync to device** yourself.
 - **Status bar:** shows progress while something runs, otherwise the latest
-  activity and how long ago it happened. Hover over it (or click it) for the
-  recent history: scans, syncs, files that couldn't be copied, devices
-  plugged in or out, conversions and songs that wouldn't play. The full log is
-  under tray icon > Show log file.
+  activity and how long ago it happened. The ▸ means there's more: click the
+  status bar to open the recent history, and click it again, click anywhere
+  else or press Esc to close it. The history lists scans, syncs, files that
+  couldn't be copied, devices plugged in or out, conversions and songs that
+  wouldn't play. The full log is under tray icon > Show log file.
 
 ## Look and feel
 
@@ -116,8 +125,8 @@ The colours and type follow the 2008 Zune brand guidelines:
 - The **orangenta** gradient (Zune Orange `#F58113` to Magenta, left to
   right) only as a small signature: the bar at the top left, dialog headings
   and the played part of the seek bar. Orange is never used on its own.
-- **Segoe**: light lowercase for labels ("music folder", dialog titles),
-  small bold uppercase for column headings and buttons, regular for
+- **Segoe**: small bold uppercase for labels, column headings and buttons
+  ("MUSIC FOLDER", "SYNC"), light lowercase for dialog titles, regular for
   everything else. Windows has Segoe UI built in. On other systems the app
   uses **Selawik**, Microsoft's free, open-licensed stand-in for Segoe UI,
   which is bundled in `static/fonts` (SIL Open Font License, included).
@@ -127,7 +136,7 @@ The colours and type follow the 2008 Zune brand guidelines:
 ## Theater mode
 
 A full-window player, for when the music is the point. Open it with the
-**Theater** button in the player bar, **Play in Theater Mode** on the
+**Theater Mode** button in the player bar, **Play in Theater Mode** on the
 right-click menu, or the **T** key.
 
 - The background is a wall of your album covers in mixed tile sizes, turned
@@ -136,7 +145,7 @@ right-click menu, or the **T** key.
   onto a big tile when the song changes. Albums without art get lettered tiles.
 - Bottom left: the cover, artist, album and title, with buttons for **song
   details** (format, bitrate, file, device status), **keep on device** (same as
-  the *Synced?* tick, so Auto-sync follows) and **show in library**.
+  the *Sync* tick, so Auto-sync follows) and **show in library**.
 - Right: **up next**, with the playing song highlighted. Click a song to jump
   to it; the list button at the bottom right hides or shows it.
 - Bottom: progress (click to seek), repeat, shuffle, previous/play/next, full

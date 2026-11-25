@@ -134,20 +134,18 @@ async function pollActivity() {
 setInterval(pollActivity, 3000);
 setInterval(() => renderActivity(false), 15000);   // keeps "2 min ago" current
 
-// Hover opens the history; click pins it open (also works with keyboard and touch).
+// Click the status bar to open the history; click it again, click anywhere else or press Esc to close.
 (() => {
   const box = $("#activity"), btn = $("#activityBtn"), panel = $("#activityPanel");
-  let pinned = false, closeTimer = 0;
   const show = (open) => {
     panel.hidden = !open;
     btn.setAttribute("aria-expanded", String(open));
+    btn.setAttribute("aria-label", open ? "Hide recent activity" : "Show recent activity");
     if (open) renderActivityList();
   };
-  box.addEventListener("mouseenter", () => { clearTimeout(closeTimer); show(true); });
-  box.addEventListener("mouseleave", () => { if (!pinned) closeTimer = setTimeout(() => show(false), 250); });
-  btn.addEventListener("click", () => { pinned = !pinned || panel.hidden; show(pinned); });
-  document.addEventListener("click", (e) => { if (!box.contains(e.target)) { pinned = false; show(false); } });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) { pinned = false; show(false); } });
+  btn.addEventListener("click", () => show(panel.hidden));
+  document.addEventListener("click", (e) => { if (!panel.hidden && !box.contains(e.target)) show(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !panel.hidden) show(false); });
 })();
 
 // =====================================================================
@@ -190,8 +188,8 @@ function statusOf(t) {
 const byStr = (f) => (t) => (f(t) || "").toLowerCase();
 const fileType = (t) => (t.rel.match(/\.([^.\\/]+)$/) || [, ""])[1].toUpperCase();
 const COLS = [
-  { key: "selected", label: "Synced?", cls: "c-check", sort: (t) => (t.selected ? 0 : 1) },
-  { key: "status", label: "Device status", sort: (t) => STATUS[statusOf(t)].rank || 9 },
+  { key: "selected", label: "Sync", cls: "c-check", sort: (t) => (t.selected ? 0 : 1) },
+  { key: "status", label: "Status", sort: (t) => STATUS[statusOf(t)].rank || 9 },
   { key: "title", label: "Title", cls: "c-title", text: (t) => t.title, sort: byStr((t) => t.title) },
   { key: "artist", label: "Artist", text: (t) => t.artist, sort: byStr((t) => t.artist) },
   { key: "album", label: "Album", text: (t) => t.album, sort: byStr((t) => t.album) },
@@ -688,15 +686,16 @@ $("#syncBtn").addEventListener("click", async () => {
 
 // =====================================================================
 // Auto-sync: a moment after ticks change, copy the newly ticked songs and
-// remove the unticked ones, so the device always matches the Synced? column.
+// remove the unticked ones, so the device always matches the Sync column.
 // =====================================================================
-const AUTO_SYNC_DELAY = 1500;           // waits for you to stop clicking
+const AUTO_SYNC_DELAY = 5000;           // time to change your mind: a tick undone within it never copies
 const AUTO_SYNC_ASK_OVER = 25;          // more removals than this at once: ask first
 let autoSyncTimer = 0, autoSyncPending = false, holdRemovals = false;
 
 function scheduleAutoSync(delay = AUTO_SYNC_DELAY) {
   if (!$("#autoSync").checked || !state.device) return;
   autoSyncPending = true;
+  if (delay >= AUTO_SYNC_DELAY && !state.busy) setStatus(`Auto-sync in ${Math.round(delay / 1000)} seconds…`);
   clearTimeout(autoSyncTimer);
   autoSyncTimer = setTimeout(runAutoSync, delay);
 }
