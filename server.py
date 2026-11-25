@@ -1185,6 +1185,59 @@ def drives():
     })
 
 
+# ---------------------------------------------------------------------------
+# Where you left off: the page saves the playing song, position and queue every
+# few seconds, so it can pick up there next time, even after a crash.
+# ---------------------------------------------------------------------------
+
+def _playback_file() -> Path:
+    return _settings_file().parent / "playback.json"
+
+
+@app.get("/api/playback")
+def get_playback():
+    try:
+        data = json.loads(_playback_file().read_text(encoding="utf-8"))
+    except Exception:
+        return jsonify(None)
+    with S.lock:
+        lib = S.library or S.settings.get("library")
+    if not lib or data.get("library") != library_key(lib):
+        return jsonify(None)          # saved for a different music folder
+    return jsonify(data)
+
+
+@app.post("/api/playback")
+def save_playback():
+    body = request.get_json(silent=True)
+    f = _playback_file()
+    if not body or not body.get("track"):
+        _try_remove(str(f))           # nothing to resume (stopped, or the list finished)
+        return jsonify({"ok": True})
+    with S.lock:
+        lib = S.library or S.settings.get("library")
+    ids = lambda v: [int(i) for i in v if isinstance(i, int)][:50000] if isinstance(v, list) else []
+    data = {
+        "library": library_key(lib) if lib else None,
+        "track": int(body["track"]),
+        "position": max(0.0, float(body.get("position") or 0)),
+        "order": ids(body.get("order")),
+        "source": ids(body.get("source")),
+        "index": int(body.get("index") or 0),
+        "shuffle": bool(body.get("shuffle")),
+        "repeat": "on" if body.get("repeat") == "on" else "off",
+        "saved": time.time(),
+    }
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, f)            # never leaves a half-written file, even if the app is killed
+    except OSError as e:
+        return error(f"Couldn't save the playback position: {e}", 500)
+    return jsonify({"ok": True})
+
+
 @app.post("/api/selection")
 def set_selection():
     """Saves ticks/unticks so they survive restarts."""
@@ -1285,7 +1338,7 @@ def art(track_id: int):
     if not path:
         abort(404)
     resp = send_file(path, mimetype="image/jpeg" if _PILImage else None, conditional=True)
-    resp.headers["Cache-Control"] = "private, max-age=3600"
+    resp.headers["Cache-Control"] = "private, max-age=86400"   # the browser keeps art for a day
     return resp
 
 

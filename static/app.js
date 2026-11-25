@@ -188,6 +188,7 @@ function statusOf(t) {
 }
 
 const byStr = (f) => (t) => (f(t) || "").toLowerCase();
+const fileType = (t) => (t.rel.match(/\.([^.\\/]+)$/) || [, ""])[1].toUpperCase();
 const COLS = [
   { key: "selected", label: "Synced?", cls: "c-check", sort: (t) => (t.selected ? 0 : 1) },
   { key: "status", label: "Device status", sort: (t) => STATUS[statusOf(t)].rank || 9 },
@@ -199,7 +200,7 @@ const COLS = [
   { key: "track", label: "#", num: true, text: (t) => t.track || "", sort: (t) => t.track },
   { key: "duration", label: "Length", num: true, text: (t) => fmtTime(t.duration), sort: (t) => t.duration },
   { key: "bitrate", label: "Bitrate", num: true, text: (t) => (t.bitrate ? `${t.bitrate} kbps` : ""), sort: (t) => t.bitrate },
-  { key: "sampleRate", label: "Sample rate", num: true, text: (t) => (t.sampleRate ? `${+(t.sampleRate / 1000).toFixed(1)} kHz` : ""), sort: (t) => t.sampleRate },
+  { key: "type", label: "Type", text: (t) => fileType(t), sort: (t) => fileType(t) },
   { key: "size", label: "Size", num: true, text: (t) => fmtSize(t.size), sort: (t) => t.size },
   { key: "rel", label: "File", text: (t) => t.rel, sort: byStr((t) => t.rel) },
 ];
@@ -264,7 +265,6 @@ function render() {
     const t = state.view[i];
     const st = statusOf(t);
     const cls = ["row"];
-    if (i % 2) cls.push("alt");
     if (state.sel.has(t.id)) cls.push("is-sel");
     if (state.focus === t.id) cls.push("is-focus");
     if (t.id === playingId) cls.push("is-playing");
@@ -886,12 +886,10 @@ class Player {
   constructor(audio) {
     this.audio = audio;
     this.shuffle = false;          // random order
-    this.repeat = "off";           // "off" | "once" | "forever"
-    this.autoAdvance = true;       // go on to the next song when one ends
+    this.repeat = "off";           // "off" or "on" (start the list over at the end)
     this.source = []; this.order = []; this.index = -1;
     this.pass = 1;                 // which time through the list (auto-advance on)
-    this.trackPlays = 0;           // times the current song has played (auto-advance off)
-    this.failures = 0;
+        this.failures = 0;
     this.current = null; this.state = "stopped";
     this.onchange = () => {}; this.onerror = async () => "skip"; this.onplaying = () => {};
     this.resolve = async (track) => `/api/audio/${track.id}`;
@@ -914,7 +912,6 @@ class Player {
     if (this.source.length) this.buildOrder(this.current);
   }
   setRepeat(mode) { this.repeat = mode; this.pass = 1; }
-  setAutoAdvance(on) { this.autoAdvance = on; }
 
   play(list, start) {
     if (!list.length) return;
@@ -940,27 +937,12 @@ class Player {
     }
   }
 
-  /** A song finished on its own: apply the shuffle / repeat / auto-advance rules. */
+  /** A song finished on its own: go on to the next one; at the end, stop or start over (repeat). */
   onEnded() {
     const n = this.order.length;
     if (!n || !this.current) { this.stop(); return; }
-
-    if (!this.autoAdvance) {
-      // Repeat applies to the current song only.
-      if (this.repeat === "forever" || (this.repeat === "once" && this.trackPlays < 2)) {
-        this.trackPlays++;
-        this.audio.currentTime = 0;
-        this.audio.play().catch(() => {});
-        return;
-      }
-      this.stop();
-      return;
-    }
-
     if (this.index < n - 1) { this.index++; this.playIndex(); return; }
-
-    // End of the list.
-    if (this.repeat === "off" || (this.repeat === "once" && this.pass >= 2)) { this.stop(); return; }
+    if (this.repeat === "off") { this.stop(); return; }
     this.pass++;
     this.startNewPass();
   }
@@ -978,14 +960,23 @@ class Player {
 
   playIndex() {
     this.current = this.order[this.index];
-    this.trackPlays = 1;
     this.state = "playing";
     this.onchange();
     this.load(this.current);
   }
 
   /** Works out where to load the song from (the original, or a converted copy), then plays it. */
-  async load(track) {
+  /** Loads a song paused at `position` seconds (used to pick up where you left off). */
+  restore(source, order, index, position) {
+    this.source = source; this.order = order; this.index = index;
+    this.pass = 1; this.failures = 0;
+    this.current = order[index];
+    this.state = "paused";
+    this.onchange();
+    this.load(this.current, position);
+  }
+
+  async load(track, startAt = 0) {
     const token = ++this.loadToken;
     let url;
     try {
@@ -997,12 +988,17 @@ class Player {
       return;
     }
     if (this.loadToken !== token || this.current !== track) return;
+    if (startAt > 0) {
+      this.audio.addEventListener("loadedmetadata", () => {
+        if (this.loadToken === token) this.audio.currentTime = Math.min(startAt, Math.max(0, this.audio.duration - 1));
+      }, { once: true });
+    }
     this.audio.src = url;
     if (this.state === "playing") this.audio.play().catch(() => {});
   }
 
   skipFailed() {
-    if (!this.autoAdvance || ++this.failures >= Math.max(1, this.order.length)) { this.stop(); return; }
+    if (++this.failures >= Math.max(1, this.order.length)) { this.stop(); return; }
     this.next();
   }
 
@@ -1125,7 +1121,7 @@ player.onplaying = (track) => {
   if (state.playErrors.delete(track.id)) render();   // it plays now (e.g. the file was fixed)
   updateNowSub();
   // Convert the next song ahead of time so it starts without a wait.
-  if (state.canConvert && player.autoAdvance && player.order.length > 1) {
+  if (state.canConvert && player.order.length > 1) {
     const next = player.order[(player.index + 1) % player.order.length];
     if (next && next !== track && needsConversion(next)) convertTrack(next).catch(() => {});
   }
@@ -1153,7 +1149,7 @@ player.onchange = () => {
     $("#nowTitle").textContent = "Not playing";
     $("#nowSub").textContent = "Double-click a song to play it";
     document.title = "MusicSync";
-    $("#seek").value = 0; $("#elapsed").textContent = "0:00"; $("#total").textContent = "0:00";
+    $("#seek").value = 0; $("#seek").style.setProperty("--pct", "0%"); $("#elapsed").textContent = "0:00"; $("#total").textContent = "0:00";
   }
   if ("mediaSession" in navigator) {
     navigator.mediaSession.metadata = t ? new MediaMetadata({ title: t.title, artist: t.artist, album: t.album }) : null;
@@ -1167,7 +1163,6 @@ $("#playBtn").addEventListener("click", () => {
   else if (player.state === "paused") player.resume();
   else playFromView(byId(state.focus) || null);
 });
-$("#stopBtn").addEventListener("click", () => player.stop());
 $("#nextBtn").addEventListener("click", () => player.next());
 $("#prevBtn").addEventListener("click", () => player.previous());
 
@@ -1181,21 +1176,70 @@ if ("mediaSession" in navigator) {   // keyboard media keys
 
 const volume = $("#volume"), seek = $("#seek");
 
+{ // Save on every song change, and clear the saved spot when playback stops.
+  const before = player.onchange;
+  player.onchange = () => { before(); savePlayback(); };
+}
+
+// ---------- Where you left off ----------
+// Saved on the server every few seconds while playing, and on pause, seek, song change and
+// closing the page, so the next visit can pick up at the same song and position.
+let lastSavedAt = 0, playbackRestored = false;
+
+function playbackSnapshot() {
+  const t = player.current;
+  if (!t) return {};
+  return {
+    track: t.id, position: audio.currentTime || 0, index: player.index,
+    order: player.order.map((x) => x.id), source: player.source.map((x) => x.id),
+    shuffle: player.shuffle, repeat: player.repeat,
+  };
+}
+function savePlayback({ leaving = false } = {}) {
+  if (!playbackRestored) return;                 // don't overwrite the saved spot before it's been offered
+  lastSavedAt = Date.now();
+  fetch("/api/playback", {
+    method: "POST", keepalive: leaving,           // keepalive: still sent while the page is closing
+    headers: { "Content-Type": "application/json", "X-MusicSync": "1" },
+    body: JSON.stringify(playbackSnapshot()),
+  }).catch(() => { /* server away: the next save will try again */ });
+}
+audio.addEventListener("timeupdate", () => { if (player.state === "playing" && Date.now() - lastSavedAt > 5000) savePlayback(); });
+audio.addEventListener("pause", () => savePlayback());
+audio.addEventListener("seeked", () => savePlayback());
+addEventListener("pagehide", () => savePlayback({ leaving: true }));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") savePlayback({ leaving: true }); });
+
+/** After the library loads: put the last song back, paused at the saved position. */
+async function restorePlayback() {
+  if (playbackRestored) return;
+  let saved = null;
+  try { saved = await api.get("/api/playback"); } catch { /* nothing saved */ }
+  playbackRestored = true;
+  if (!saved || player.current) return;
+  const toTracks = (ids) => ids.map(byId).filter(Boolean);
+  const track = byId(saved.track);
+  if (!track) return;                            // the song is gone from the library
+  let order = toTracks(saved.order), source = toTracks(saved.source);
+  let index = order.indexOf(track);
+  if (index < 0) { order = state.view.slice(); index = Math.max(0, order.indexOf(track)); }
+  if (!source.length) source = order.slice();
+  player.setShuffle(saved.shuffle); player.setRepeat(saved.repeat);
+  savePref("musicsync.shuffle", saved.shuffle ? "on" : "off"); savePref("musicsync.repeat", saved.repeat);
+  renderModes();
+  player.restore(source, order, index, saved.position || 0);
+  const i = indexInView(track.id);
+  if (i >= 0) { state.focus = state.anchor = track.id; state.sel = new Set([track.id]); ensureVisible(i); render(); }
+  setStatus(`Picked up where you left off: “${track.title}” at ${fmtTime(saved.position || 0)}. Press play to continue.`);
+}
+
 // ---------- Play mode toggles ----------
-const REPEAT_NEXT = { off: "once", once: "forever", forever: "off" };
 function loadPref(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
 function savePref(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } }
 
 player.setShuffle(loadPref("musicsync.shuffle", "off") === "on");
-player.setRepeat(["off", "once", "forever"].includes(loadPref("musicsync.repeat", "off")) ? loadPref("musicsync.repeat", "off") : "off");
-player.setAutoAdvance(loadPref("musicsync.advance", "on") === "on");
-
-function describeMode() {
-  const a = player.autoAdvance, r = player.repeat;
-  if (!a) return r === "off" ? "Plays one song" : r === "once" ? "Plays this song twice" : "Loops this song";
-  const what = player.shuffle ? "list in random order" : "list";
-  return r === "off" ? `Plays the ${what}` : r === "once" ? `Plays the ${what} twice` : `Loops the ${what}`;
-}
+// Repeat is on (loop the whole list) or off. Older versions saved "once"/"forever".
+player.setRepeat(loadPref("musicsync.repeat", "off") === "off" ? "off" : "on");
 
 function renderModes() {
   const set = (btn, pressed, label) => {
@@ -1203,14 +1247,10 @@ function renderModes() {
     btn.title = label;
     btn.setAttribute("aria-label", label);
   };
-  set($("#shuffleBtn"), player.shuffle, `Shuffle: ${player.shuffle ? "on" : "off"}`);
+  set($("#shuffleBtn"), player.shuffle,
+    player.shuffle ? "Shuffle on: random order, reshuffled each time round" : "Shuffle off: plays in list order");
   set($("#repeatBtn"), player.repeat !== "off",
-    `Repeat: ${{ off: "off", once: "once", forever: "forever" }[player.repeat]} (click to change)`);
-  set($("#advanceBtn"), player.autoAdvance, `Auto-advance: ${player.autoAdvance ? "on" : "off"}`);
-  const badge = $("#repeatBadge");
-  badge.hidden = player.repeat === "off";
-  badge.textContent = player.repeat === "once" ? "1" : "∞";
-  $("#modeText").textContent = describeMode();
+    player.repeat !== "off" ? "Repeat on: starts over at the end of the list" : "Repeat off: stops at the end of the list");
 }
 
 $("#shuffleBtn").addEventListener("click", () => {
@@ -1219,13 +1259,8 @@ $("#shuffleBtn").addEventListener("click", () => {
   renderModes();
 });
 $("#repeatBtn").addEventListener("click", () => {
-  player.setRepeat(REPEAT_NEXT[player.repeat]);
+  player.setRepeat(player.repeat === "off" ? "on" : "off");
   savePref("musicsync.repeat", player.repeat);
-  renderModes();
-});
-$("#advanceBtn").addEventListener("click", () => {
-  player.setAutoAdvance(!player.autoAdvance);
-  savePref("musicsync.advance", player.autoAdvance ? "on" : "off");
   renderModes();
 });
 renderModes();
@@ -1256,7 +1291,12 @@ audio.volume = +volume.value;
 volume.addEventListener("input", () => { audio.volume = +volume.value; savePref("musicsync.volume", volume.value); });
 
 let seeking = false;
-seek.addEventListener("input", () => { seeking = true; $("#elapsed").textContent = fmtTime(+seek.value); });
+/** The played part of the seek bar is drawn as the orangenta energy bar. */
+function paintSeek() {
+  const max = +seek.max || 0;
+  seek.style.setProperty("--pct", max ? `${Math.min(100, (+seek.value / max) * 100)}%` : "0%");
+}
+seek.addEventListener("input", () => { seeking = true; $("#elapsed").textContent = fmtTime(+seek.value); paintSeek(); });
 seek.addEventListener("change", () => { if (player.current) audio.currentTime = +seek.value; seeking = false; });
 audio.addEventListener("loadedmetadata", () => {
   seek.max = isFinite(audio.duration) ? audio.duration : (player.current?.duration || 0);
@@ -1265,6 +1305,7 @@ audio.addEventListener("loadedmetadata", () => {
 audio.addEventListener("timeupdate", () => {
   if (seeking || !player.current) return;
   seek.value = audio.currentTime;
+  paintSeek();
   $("#elapsed").textContent = fmtTime(audio.currentTime);
 });
 
@@ -1339,6 +1380,7 @@ function pickFolder(title, start, { mustExist }) {
     if (s.job && s.job.running) await finishScan();       // the server is reading the last library
     else if (s.trackCount) await loadTracks();
     else setStatus("Choose a music folder to begin.");
+    if (state.tracks.length) await restorePlayback(); else playbackRestored = true;
 
     if (state.device || state.savedDevice) {
       applyDevice(await api.send("/api/device/refresh"));

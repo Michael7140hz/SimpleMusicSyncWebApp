@@ -25,7 +25,7 @@ A WMA file playing in the browser after being converted on the fly:
 
 ![Player showing a WMA converted for playback](docs/screenshots/playback-conversion.png)
 
-Player with shuffle on and repeat set to forever:
+Player controls, with repeat on (lit, with a dot) and shuffle off:
 
 ![Player controls](docs/screenshots/player-controls.png)
 
@@ -61,19 +61,26 @@ the browser.
 ## Using it
 
 - **Music folder → Browse…** opens a folder picker. Click a column header to
-  sort; type in the filter box to narrow the list.
-- **Playing:** double-click a song or press Enter. The list's current sort and
-  filter order is the play order. Keyboard media keys work too. Three buttons
-  next to the player set how it plays, with a short description beside them:
-  - **Shuffle** (off by default): random order, reshuffled on each repeat.
-  - **Repeat** (off by default): click to cycle off → once (badge "1") →
-    forever (badge "∞").
-  - **Auto-advance** (on by default): go on to the next song when one ends.
-    With it on, repeat applies to the whole list (once = list plays twice).
-    With it off, repeat applies to the current song (once = song plays twice).
+  sort; type in the filter box to narrow the list. The *Type* column shows
+  each file's format (MP3, FLAC, M4A, WMA…).
+- **Playing:** double-click a song or press Enter. Songs play one after
+  another in the list's current sort and filter order. Keyboard media keys
+  work too. The controls at the bottom left: **repeat** and **shuffle**
+  (they light up, with a dot underneath, when on), then previous,
+  play/pause and next. Hover over a control to see what it does.
+  - **Repeat** (off by default): when on, the list starts over at the end;
+    when off, playback stops after the last song.
+  - **Shuffle** (off by default): random order, reshuffled each time the list
+    starts over.
 
   Formats the browser can't play are converted automatically (see "Playing
   every format").
+- **Where you left off:** the playing song, position, queue, shuffle and
+  repeat are saved every few seconds (and on pause, seek, song change and
+  closing the page). Next time you open MusicSync, even after a crash or
+  restart, that song is back in the player, paused at the same spot; press
+  play to carry on. Browsers don't let a page start playing sound by itself,
+  so it waits for you. Nothing is resumed once the list has played to the end.
 - **Light/dark:** the sun/moon button at the top right switches themes. Until
   you use it, the app follows your Windows setting.
 - **Device:** pick a drive (songs go into `X:\Music\`) or **Choose folder…**.
@@ -97,6 +104,26 @@ the browser.
   plugged in or out, conversions and songs that wouldn't play. The full log is
   under tray icon > Show log file.
 
+## Look and feel
+
+The colours and type follow the 2008 Zune brand guidelines:
+
+- **Mostly white**, with the Cool Greys (`#F2F2F2`, `#DAD9D9`, `#A09D9E`,
+  `#7B7678`) and near-black Pantone 426C (`#252122`) for text.
+- **Magenta** (`#EC008C`) as the accent: the playing song, toggles that are
+  on, checkboxes, focus. For small text it's deepened a little (`#C8007A`) so
+  it stays readable on white.
+- The **orangenta** gradient (Zune Orange `#F58113` to Magenta, left to
+  right) only as a small signature: the bar at the top left, dialog headings
+  and the played part of the seek bar. Orange is never used on its own.
+- **Segoe**: light lowercase for labels ("music folder", dialog titles),
+  small bold uppercase for column headings and buttons, regular for
+  everything else. Windows has Segoe UI built in. On other systems the app
+  uses **Selawik**, Microsoft's free, open-licensed stand-in for Segoe UI,
+  which is bundled in `static/fonts` (SIL Open Font License, included).
+- **Dark mode** keeps the same rules on near-black (`#1C191A` and Pantone
+  426C), with Cool Grey text and a lighter magenta for small text.
+
 ## Theater mode
 
 A full-window player, for when the music is the point. Open it with the
@@ -119,8 +146,12 @@ right-click menu, or the **T** key.
 
 Album art comes from the songs' tags (MP3, M4A, FLAC, OGG, WMA, APE/WavPack),
 or a cover image in the album folder (`cover.jpg`, `folder.jpg`, `front.png`
-and so on). Resized copies are cached, so each album is only read once. The
-cover also shows in the player bar and in Windows' media overlay.
+and so on). Resized copies are cached on disk next to the converted files
+(`%LocalAppData%\MusicSync\art\`), so each album is only read once, and the
+browser keeps them for a day. The wall is sized for your whole screen, so
+switching between windowed and full screen doesn't rebuild it, and it's kept
+when you leave Theater mode. The cover also shows in the player bar and in
+Windows' media overlay.
 
 A song counts as on the device when a file with the same path (relative to your
 music folder) and the same size is in the device folder. Only files in the
@@ -250,8 +281,8 @@ Then copy the whole folder to the offline PC and run `start.bat`. Delete the
 - Very large libraries are fine: only the rows on screen are drawn.
 - Settings are saved in `%AppData%\MusicSync\web-settings.json`; play mode,
   volume and light/dark choice are remembered by the browser.
-- Files MusicSync keeps: settings and the library index in
-  `%AppData%\MusicSync\`, converted copies for playback in
+- Files MusicSync keeps: settings, the library index and where you left off
+  (`playback.json`) in `%AppData%\MusicSync\`, converted copies for playback in
   `%LocalAppData%\MusicSync\converted\`, album art in
   `%LocalAppData%\MusicSync\art\` (safe to delete; it's rebuilt as needed),
   and `musicsync.log` in the app folder (tray icon > Show log file).

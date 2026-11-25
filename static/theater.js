@@ -11,7 +11,7 @@
     info: $("#thInfo"), synced: $("#thSynced"), locate: $("#thLocate"), details: $("#thDetails"),
     queue: $("#thQueue"), queueList: $("#thQueueList"), queueBtn: $("#thQueueBtn"),
     ptitle: $("#thPTitle"), seek: $("#thSeek"), elapsed: $("#thElapsed"), remain: $("#thRemain"),
-    repeat: $("#thRepeat"), repeatBadge: $("#thRepeatBadge"), shuffle: $("#thShuffle"),
+    repeat: $("#thRepeat"), shuffle: $("#thShuffle"),
     prev: $("#thPrev"), play: $("#thPlay"), playIcon: $("#thPlayIcon"), next: $("#thNext"),
     full: $("#thFull"), fullIcon: $("#thFullIcon"), close: $("#thClose"), back: $("#thBack"),
     vol: $("#thVol"), volText: $("#thVolText"),
@@ -19,6 +19,8 @@
   const GAP = 3;                       // dark seams between tiles
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
   let isOpen = false, tiles = [], unit = 120, swapTimer = 0, idleTimer = 0, resizeTimer = 0;
+  let built = null;                     // size and library the current wall was built for
+  const loadedArt = new Set();          // art the browser already has: rebuilt tiles show it at once
   let candidates = [], candIndex = 0, shownTrackId = null, seeking = false, lastFocus = null;
   const missingArt = new Set();       // song ids whose album has no art
 
@@ -51,11 +53,38 @@
 
   // ---------------------------------------------------------------
   // The wall: tiles of 1x1, 2x2 and 3x3 units packed into a grid a bit
-  // larger than the window, so it can drift.
+  // larger than the screen, so it can drift. It's sized for the whole
+  // screen, so switching between windowed and full screen (or resizing)
+  // only changes how far it drifts; the tiles stay as they are. It's also
+  // kept when you leave Theater mode, for next time.
   // ---------------------------------------------------------------
-  function buildWall() {
+  function wallSize() {
+    return { W: Math.max(th.clientWidth, screen.width || 0), H: Math.max(th.clientHeight, screen.height || 0) };
+  }
+
+  function setDrift() {
+    if (!built) return;
+    pan.style.setProperty("--dx", `${-Math.max(0, built.cols * unit - th.clientWidth)}px`);
+    pan.style.setProperty("--dy", `${-Math.max(0, built.rows * unit - th.clientHeight)}px`);
+  }
+
+  /** Builds the wall only when there isn't one yet, the library changed, or the screen got bigger. */
+  function ensureWall() {
+    const { W, H } = wallSize();
+    const fresh = !built || built.library !== state.tracks.length || W > built.W || H > built.H;
+    if (fresh) {
+      candidates = albumCandidates();
+      candIndex = 0;
+      buildWall(!built);
+    } else {
+      setDrift();
+    }
     clearInterval(swapTimer);
-    const W = th.clientWidth, H = th.clientHeight;
+    swapTimer = setInterval(swapTile, reduceMotion.matches ? 9000 : 2400);
+  }
+
+  function buildWall(firstTime) {
+    const { W, H } = wallSize();
     unit = Math.round(Math.max(84, Math.min(170, H / 6.4)));
     const cols = Math.ceil((W * 1.2) / unit) + 1, rows = Math.ceil((H * 1.2) / unit) + 1;
     const used = Array.from({ length: rows }, () => new Uint8Array(cols));
@@ -78,8 +107,8 @@
     pan.textContent = "";
     pan.style.width = `${cols * unit}px`;
     pan.style.height = `${rows * unit}px`;
-    pan.style.setProperty("--dx", `${-(cols * unit - W)}px`);
-    pan.style.setProperty("--dy", `${-(rows * unit - H)}px`);
+    built = { W, H, cols, rows, library: state.tracks.length };
+    setDrift();
     const frag = document.createDocumentFragment();
     for (const t of tiles) {
       t.el = document.createElement("div");
@@ -88,32 +117,38 @@
       frag.append(t.el);
     }
     pan.append(frag);
-    // Fill the big tiles first, a few at a time, so the wall builds up as it opens.
-    [...tiles].sort((a, b) => b.s - a.s).forEach((t, i) => setTimeout(() => isOpen && fillTile(t), i * 22));
-    swapTimer = setInterval(swapTile, reduceMotion.matches ? 9000 : 2400);
+    // The first time, fill the big tiles first, a few at a time, so the wall builds up as it
+    // opens. Later rebuilds fill at once, and art the browser already has appears without a fade.
+    const order = [...tiles].sort((a, b) => b.s - a.s);
+    if (firstTime) order.forEach((t, i) => setTimeout(() => fillTile(t), i * 22));
+    else order.forEach((t) => fillTile(t, nextCandidate(), 0, true));
   }
 
-  function fillTile(tile, track = nextCandidate(), attempts = 0) {
+  function fillTile(tile, track = nextCandidate(), attempts = 0, instant = false) {
     if (!track || !tile.el) return;
     tile.track = track;
     if (missingArt.has(track.id)) { letterTile(tile, track); return; }
+    const url = `/api/art/${track.id}?size=${tile.s * unit > 330 ? "large" : "small"}`;
     const img = new Image();
     img.alt = "";
     img.decoding = "async";
     img.onload = () => {
+      loadedArt.add(url);
       if (tile.track !== track) return;
+      if (instant) img.style.transition = "none";
       tile.el.append(img);
       void img.offsetWidth;                      // start the fade from transparent
       img.classList.add("on");
+      if (instant) requestAnimationFrame(() => { img.style.transition = ""; });
       retireOthers(tile, img);
     };
     img.onerror = () => {
       missingArt.add(track.id);
       if (tile.track !== track) return;
-      if (attempts < 4 && artLeft()) fillTile(tile, nextCandidate(), attempts + 1);
+      if (attempts < 4 && artLeft()) fillTile(tile, nextCandidate(), attempts + 1, instant);
       else letterTile(tile, track);
     };
-    img.src = `/api/art/${track.id}?size=${tile.s * unit > 330 ? "large" : "small"}`;
+    img.src = url;
   }
 
   /** Albums without art get a typographic tile instead. */
@@ -157,7 +192,7 @@
   // ---------------------------------------------------------------
   // Colour: tint the wall with the cover's most characteristic colour.
   // ---------------------------------------------------------------
-  const DEFAULT_HUE = 328;
+  const DEFAULT_HUE = 324;                 // Zune magenta (#EC008C)
   function setAccent(hue, sat = 0.7) {
     const s = Math.round(Math.min(0.82, Math.max(0.5, sat)) * 100);
     th.style.setProperty("--th-accent", `hsl(${hue} ${s}% 46%)`);
@@ -304,13 +339,11 @@
 
   function updateModes() {
     ui.shuffle.setAttribute("aria-pressed", String(player.shuffle));
-    ui.shuffle.title = `Shuffle: ${player.shuffle ? "on" : "off"}`;
-    ui.shuffle.setAttribute("aria-label", ui.shuffle.title);
     ui.repeat.setAttribute("aria-pressed", String(player.repeat !== "off"));
-    ui.repeat.title = `Repeat: ${player.repeat}`;
+    ui.repeat.title = $("#repeatBtn").title;
     ui.repeat.setAttribute("aria-label", ui.repeat.title);
-    ui.repeatBadge.hidden = player.repeat === "off";
-    ui.repeatBadge.textContent = player.repeat === "once" ? "1" : "∞";
+    ui.shuffle.title = $("#shuffleBtn").title;
+    ui.shuffle.setAttribute("aria-label", ui.shuffle.title);
   }
 
   function syncVolume() {
@@ -403,11 +436,8 @@
     ui.queue.hidden = !showQueue;
     th.classList.toggle("queue-hidden", !showQueue);
     ui.queueBtn.setAttribute("aria-pressed", String(showQueue));
-    candidates = albumCandidates();
-    candIndex = 0;
     shownTrackId = null;
-    setAccent(DEFAULT_HUE);
-    buildWall();
+    ensureWall();
     updateAll();
     updateModes();
     syncVolume();
@@ -423,8 +453,6 @@
     clearTimeout(idleTimer);
     th.hidden = true;
     app.inert = false;
-    pan.textContent = "";
-    tiles = [];
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     (lastFocus && document.contains(lastFocus) ? lastFocus : grid).focus({ preventScroll: true });
   }
@@ -457,7 +485,7 @@
   addEventListener("resize", () => {
     if (!isOpen) return;
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(buildWall, 300);
+    resizeTimer = setTimeout(ensureWall, 250);
   });
 
   // ---------------------------------------------------------------
