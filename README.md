@@ -25,6 +25,10 @@ A WMA file playing in the browser after being converted on the fly:
 
 ![Player showing a WMA converted for playback](docs/screenshots/playback-conversion.png)
 
+The visualizer's two styles, bars and wave (click it to switch):
+
+![Visualizer: bars and wave](docs/screenshots/visualizer.png)
+
 Player controls, with repeat on (lit, with a dot) and shuffle off:
 
 ![Player controls](docs/screenshots/player-controls.png)
@@ -77,7 +81,10 @@ the browser.
   every format").
 - **Visualizer:** while a song plays, a spectrum visualizer fills the space
   in the player bar, in the same orange-to-magenta gradient (low notes on the
-  left, high on the right). It starts after your first click or key press on
+  left, high on the right). Click it to switch between **bars** (slim bars
+  with falling peak caps; wider windows get more bars, not fatter ones) and
+  **wave** (a smooth glowing line along a baseline, with a faint reflection).
+  Your choice is remembered. It starts after your first click or key press on
   the page, because browsers only allow audio analysis after you've
   interacted. It's hidden in narrow windows and when Windows' "reduce
   motion" setting (Animation effects off) is on.
